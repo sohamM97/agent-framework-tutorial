@@ -55,7 +55,7 @@ For the youtube/udemy tutorial KodeKloud labs:
 
 ## Setup (applies to the entire lab):
 
-Note: this was needed for section 1 but not for 2. Also, the given URL doesn't seem to exist anymore. Maybe something changed in the lab - need to try section 1 again to verify.
+**Note: this was needed for section 1 but not for 2.** Also, the given URL doesn't seem to exist anymore. Maybe something changed in the lab - need to try section 1 again to verify.
 
 - Go to https://kodekloud.com/ai-playgrounds/kodekey, launch now, copy base url and api key
 - Export `OPENAI_API_KEY` and `OPENAI_API_BASE` in the terminal
