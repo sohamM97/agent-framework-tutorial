@@ -82,3 +82,11 @@ For the youtube/udemy tutorial KodeKloud labs:
     - `OpenAIChatClient` calls the OpenAI **Responses API** (`/v1/responses`), while `OpenAIChatCompletionClient` calls the classic **Chat Completions API** (`/v1/chat/completions`).
     - The KodeKloud lab gateway (a proxy `OPENAI_API_BASE`) only implements `/chat/completions`, so `OpenAIChatClient` fails with `404 - {'detail': 'Not Found'}` (the `detail` body is a giveaway that it's a proxy, not real OpenAI).
     - Everything downstream (`client.as_agent(...)`, `create_session()`, `agent.run(...)`) is identical between the two clients — only the endpoint differs.
+
+## Section 3 and 4
+
+### Code changes (apply to the entire lab):
+
+- Use `model="openai/gpt-4.1-mini"` (instead of `model_id="openai/gpt-4.1-mini"`)
+- Import `Agent` instead of `ChatAgent` (renamed in `python-1.3.0`)
+- Use `Agent(client=...)` instead of `Agent(chat_client=...)` (the constructor's first parameter was renamed from `chat_client` to `client`)
