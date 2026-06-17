@@ -11,6 +11,8 @@ from pydantic import BaseModel
 
 load_dotenv()
 
+# TODO: something with context provider
+
 
 class UserSatisfaction(BaseModel):
     # TODO: Claude Review: consider adding a `reasoning: str` field before
@@ -20,14 +22,14 @@ class UserSatisfaction(BaseModel):
 
 async def run_agent(
     agent: Agent,
-    prompt: str | Message | list[Message],
+    message: str | Message | list[Message],
     session: Optional[AgentSession] = None,
     options: Optional[dict] = None,
 ) -> Optional[BaseModel]:
     # TODO: Claude Review: don't stream decision/structured calls — when options
     # is set we never iterate chunks, so stream=True just adds overhead. Stream
     # only user-facing turns; use stream=False for the structured branch.
-    response = await agent.run(prompt, session=session, stream=True, options=options)
+    response = await agent.run(message, session=session, stream=True, options=options)
 
     if options:
         # https://learn.microsoft.com/en-us/agent-framework/agents/structured-outputs?pivots=programming-language-python
@@ -93,7 +95,7 @@ async def main():
 
     bot_message = await run_agent(
         agent=sm_agent,
-        prompt=Message(
+        message=Message(
             role="system", contents=["Greet the user, and ask him his requirements."]
         ),
         session=session,
@@ -103,11 +105,14 @@ async def main():
         user_response = await take_input_from_user()
         user_satisfaction_info = await run_agent(
             agent=sf_agent,
-            prompt=[
+            message=[
                 Message(
                     role="user",
                     contents=[
-                        f"Assistant's proposal:\n{bot_message}\n\nUser's reply:\n{user_response}"
+                        f"Assistant's proposal:"
+                        f"\n{bot_message}"
+                        "\n\nUser's reply:"
+                        f"\n{user_response}"
                     ],
                 )
             ],
@@ -120,16 +125,21 @@ async def main():
             break
 
         bot_message = await run_agent(
-            agent=sm_agent, prompt=user_response, session=session
+            agent=sm_agent, message=user_response, session=session
         )
 
     # once user is satisfied
 
     await run_agent(
         agent=sm_agent,
-        prompt="Summarize the discussion you had with the user, the "
-        "deliverables, and tell the user you will return with the finished "
-        "product shortly.",
+        message=Message(
+            role="system",
+            contents=[
+                "Summarize the discussion you had with the user, the "
+                "deliverables, and tell the user you will return with the "
+                "finished product shortly."
+            ],
+        ),
         session=session,
     )
     # TODO: a tool to output the plan in a text file. maybe a summary of the transcript too.
