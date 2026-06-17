@@ -1,22 +1,45 @@
 import asyncio
 import os
+from typing import Optional
 
 from agent_framework import Agent, AgentSession
 
 # TODO: learn more about ChatClient vs ChatCompletionClient
 from agent_framework.openai import OpenAIChatCompletionClient
 from dotenv import load_dotenv
+from pydantic import BaseModel
 
 load_dotenv()
 
 
-async def run_agent(agent: Agent, prompt: str, session: AgentSession):
-    response = await agent.run(prompt, session=session, stream=True)
-    print("\n[AGENT]: ", end="", flush=True)
-    async for chunk in response:
-        if chunk.text:
-            print(chunk.text, end="", flush=True)
-    print()
+class UserSatisfaction(BaseModel):
+    # TODO: Claude Review: consider adding a `reasoning: str` field before
+    # `satisfied` to give the model room to think — usually improves accuracy.
+    satisfied: bool
+
+
+async def run_agent(
+    agent: Agent,
+    prompt: str,
+    session: AgentSession,
+    options: Optional[dict] = None,
+) -> Optional[BaseModel]:
+    # TODO: Claude Review: don't stream decision/structured calls — when options
+    # is set we never iterate chunks, so stream=True just adds overhead. Stream
+    # only user-facing turns; use stream=False for the structured branch.
+    response = await agent.run(prompt, session=session, stream=True, options=options)
+
+    if options:
+        # https://learn.microsoft.com/en-us/agent-framework/agents/structured-outputs?pivots=programming-language-python
+        final_response = await response.get_final_response()
+        return final_response.value
+
+    else:
+        print("\n[AGENT]: ...", flush=True)
+        async for chunk in response:
+            if chunk.text:
+                print(chunk.text, end="", flush=True)
+        print()
 
 
 async def take_input_from_user() -> str:
@@ -25,6 +48,9 @@ async def take_input_from_user() -> str:
 
 async def main():
 
+    # TODO: Claude Review: os.getenv returns None silently on a missing var,
+    # which fails confusingly deep in the SDK. Use os.environ["..."] (as
+    # tutorials/01_hello_agent.py does) to fail fast with a clear KeyError.
     client = OpenAIChatCompletionClient(
         model=os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME"),
         api_key=os.getenv("AZURE_OPENAI_API_KEY"),
@@ -38,11 +64,18 @@ async def main():
         instructions="You are Soham, the lead developer of AIS Team. Your job "
         "is to take requests from the user and convert them into concrete "
         "software products. The requests can be features, bugfixes, "
-        "deployments, implementations or anything technical, really.",
+        "deployments, implementations or anything technical, really."
+        "Always keep your statements concise - within a 100 words,"
+        "unless absolutely necessary.",
     )
 
     session = sm_agent.create_session()
 
+    # TODO: Claude Review: move standing persona/behavior (friendly tone, greet,
+    # ask requirements, propose solution, conciseness) into Agent(instructions=).
+    # run() input should carry user content, not behavioral directives — and
+    # splicing raw user text into a directive prompt (see below) is a prompt-
+    # injection habit best avoided.
     await run_agent(
         agent=sm_agent,
         prompt="Greet the user, and ask him his requirements in a friendly way.",
@@ -54,7 +87,66 @@ async def main():
     await run_agent(
         agent=sm_agent,
         prompt=f"The following is the user's requirement: `{req}`. Propose him"
-        " a solution in a friendly way.",
+        " a solution in a friendly way."
+        "If needed, ask him follow up questions. If you're not asking "
+        "follow-ups, Ask the user if he is satisfied with "
+        "this proposal, or whether he wants to discuss it further. ",
+        session=session,
+    )
+
+    # TODO: Claude Review: run the satisfaction classifier on a SEPARATE session
+    # (or a small dedicated agent), not `session`. Right now each structured call
+    # appends its "figure out if satisfied" prompt + JSON answer into the shared
+    # history, polluting the user-facing thread and wasting tokens. Keep the
+    # decision out-of-band (lightweight LLM-as-judge pattern).
+    # TODO: Claude Review: loop-and-a-half — this take-input + classify block is
+    # duplicated inside the loop. Collapse to a single `while True:` with a
+    # `break`, and factor the classifier prompt into one helper.
+    user_response = await take_input_from_user()
+
+    user_satisfaction_info = await run_agent(
+        agent=sm_agent,
+        prompt="The following is the user's response to your solution: "
+        f"`{user_response}`. Figure out if the user is satisfied it. In case "
+        "he wants to discuss this further, assume he isn't satisfied just "
+        "yet.",
+        session=session,
+        options={"response_format": UserSatisfaction},
+    )
+
+    satisfied = user_satisfaction_info and user_satisfaction_info.satisfied
+
+    while not satisfied:
+        await run_agent(
+            agent=sm_agent,
+            prompt="The user is not entirely satisfied with your solution. "
+            "He needs to discuss some more points before giving a go ahead."
+            "Clarify whatever he needs and then ask him again whether we're "
+            "good to go.",
+            session=session,
+        )
+
+        user_response = await take_input_from_user()
+
+        user_satisfaction_info = await run_agent(
+            agent=sm_agent,
+            prompt="The following is the user's response to your solution: "
+            f"`{user_response}`. Figure out if the user is satisfied. In "
+            "case he wants to discuss this further, assume he isn't satisfied "
+            "just yet.",
+            session=session,
+            options={"response_format": UserSatisfaction},
+        )
+
+        satisfied = user_satisfaction_info and user_satisfaction_info.satisfied
+
+    # once user is satisfied
+
+    await run_agent(
+        agent=sm_agent,
+        prompt="Summarize the discussion you had with the user, the "
+        "deliverables, and tell the user you will return with the finished "
+        "product shortly.",
         session=session,
     )
 
