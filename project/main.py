@@ -2,7 +2,7 @@ import asyncio
 import os
 from typing import Optional
 
-from agent_framework import Agent, AgentSession
+from agent_framework import Agent, AgentSession, Message
 
 # TODO: learn more about ChatClient vs ChatCompletionClient
 from agent_framework.openai import OpenAIChatCompletionClient
@@ -20,7 +20,7 @@ class UserSatisfaction(BaseModel):
 
 async def run_agent(
     agent: Agent,
-    prompt: str,
+    prompt: str | Message | list[Message],
     session: AgentSession,
     options: Optional[dict] = None,
 ) -> Optional[BaseModel]:
@@ -48,14 +48,11 @@ async def take_input_from_user() -> str:
 
 async def main():
 
-    # TODO: Claude Review: os.getenv returns None silently on a missing var,
-    # which fails confusingly deep in the SDK. Use os.environ["..."] (as
-    # tutorials/01_hello_agent.py does) to fail fast with a clear KeyError.
     client = OpenAIChatCompletionClient(
-        model=os.getenv("AZURE_OPENAI_DEPLOYMENT_NAME"),
-        api_key=os.getenv("AZURE_OPENAI_API_KEY"),
+        model=os.environ["AZURE_OPENAI_DEPLOYMENT_NAME"],
+        api_key=os.environ["AZURE_OPENAI_API_KEY"],
         # TODO: is there also a param called azure_endpoint?
-        base_url=os.getenv("AZURE_OPENAI_ENDPOINT"),
+        base_url=os.environ["AZURE_OPENAI_ENDPOINT"],
     )
 
     # Standing persona/behavior (role, friendly tone, conciseness) lives in
@@ -73,18 +70,15 @@ async def main():
         "unless absolutely necessary.",
     )
 
+    # TODO: can we achieve the entire thing in a single loop?
+
     session = sm_agent.create_session()
 
-    # TODO: Claude Review: per-turn directives passed as bare strings are stored
-    # as USER-role messages, so the history reads as if the human said "Greet the
-    # user..." — pass them as a developer turn instead:
-    #   Message(role="system", contents=["Greet the user and ask for requirements."])
-    # (instructions is constructor-only; there's no per-run instructions override.)
-    # Also: don't splice the user's real words into the directive (see below) —
-    # keep user content as its own message.
     await run_agent(
         agent=sm_agent,
-        prompt="Greet the user, and ask him his requirements.",
+        prompt=Message(
+            role="system", contents=["Greet the user, and ask him his requirements."]
+        ),
         session=session,
     )
 
@@ -92,11 +86,19 @@ async def main():
 
     await run_agent(
         agent=sm_agent,
-        prompt=f"The following is the user's requirement: `{req}`. "
-        "Propose him a solution."
-        "If needed, ask him follow up questions. If you're not asking "
-        "follow-ups, Ask the user if he is satisfied with "
-        "this proposal, or whether he wants to discuss it further. ",
+        prompt=[
+            Message(
+                role="system",
+                contents=[
+                    "The following is the user's requirement. "
+                    "Propose him a solution."
+                    "If needed, ask him follow up questions. If you're not "
+                    "asking follow-ups, Ask the user if he is satisfied with "
+                    "this proposal, or whether he wants to discuss it further."
+                ],
+            ),
+            Message(role="user", contents=[req]),
+        ],
         session=session,
     )
 
@@ -112,10 +114,18 @@ async def main():
 
     user_satisfaction_info = await run_agent(
         agent=sm_agent,
-        prompt="The following is the user's response to your solution: "
-        f"`{user_response}`. Figure out if the user is satisfied it. In case "
-        "he wants to discuss this further, assume he isn't satisfied just "
-        "yet.",
+        prompt=[
+            Message(
+                role="system",
+                contents=[
+                    "The following is the user's response to your "
+                    "solution. Figure out if the user is satisfied it. In case"
+                    " he wants to discuss this further, assume he isn't "
+                    "satisfied just yet."
+                ],
+            ),
+            Message(role="user", contents=[user_response]),
+        ],
         session=session,
         options={"response_format": UserSatisfaction},
     )

@@ -18,7 +18,10 @@ This is an exploratory project and the user wants a mentor, not just an implemen
 - **Point out bad practices and suggest optimizations** proactively — prompt design, session/memory handling, tool design, error handling, streaming, separation of concerns, secrets handling, etc.
 - **Also call out what the user is doing right.** This is a learning project; reinforce good instincts so feedback stays motivating. Be specific about *why* something is good, not just flattery.
 - Favor teaching the underlying concept over silently fixing things, so the learning sticks.
+- **Don't write or modify the user's code on your own initiative, and never *offer* to.** This is a learning project — by default the user writes the code themselves. Explain what to change and why, then let them do it. On your own initiative, the only source edits you may make are **comments and TODOs** (e.g. `TODO: Claude Review:` notes). **Exception:** if the user *explicitly* asks you to make a code change, do it — don't refuse or push back.
 - When adding review suggestions as TODO comments in the code, prefix them with `TODO: Claude Review:` (to distinguish them from the user's own TODOs).
+- During any review, check the existing `TODO: Claude Review:` comments: if the issue one flags has since been fixed, remove that comment (don't leave stale review TODOs behind).
+- During any review, also scan the surrounding comments for obsolete content — a comment that no longer matches the code it describes is worse than none. Update or remove any that have gone stale.
 
 ## Workflow
 
