@@ -1,8 +1,9 @@
 import asyncio
 import os
+from pathlib import Path
 from typing import Optional
 
-from agent_framework import Agent, AgentSession, Message
+from agent_framework import Agent, AgentResponse, AgentSession, Message, tool
 
 # TODO: learn more about ChatClient vs ChatCompletionClient
 from agent_framework.openai import OpenAIChatCompletionClient
@@ -20,30 +21,47 @@ class UserSatisfaction(BaseModel):
     satisfied: bool
 
 
+class ProposalFileDetails(BaseModel):
+    filename: str
+    proposal: str
+
+
+# @tool(approval_mode="always_require")
+def write_to_file(filename: str, contents: str, filepath: str = "."):
+    file_loc = Path(filepath) / filename
+    with open(file_loc, "w") as f:
+        f.write(contents)
+
+
 async def run_agent(
     agent: Agent,
     message: str | Message | list[Message],
     session: Optional[AgentSession] = None,
     options: Optional[dict] = None,
-) -> Optional[BaseModel]:
+    show_message: bool = True,
+) -> AgentResponse:
     # TODO: Claude Review: don't stream decision/structured calls — when options
     # is set we never iterate chunks, so stream=True just adds overhead. Stream
     # only user-facing turns; use stream=False for the structured branch.
-    response = await agent.run(message, session=session, stream=True, options=options)
+    response = await agent.run(
+        message, session=session, stream=show_message, options=options
+    )
 
-    if options:
-        # https://learn.microsoft.com/en-us/agent-framework/agents/structured-outputs?pivots=programming-language-python
-        final_response = await response.get_final_response()
-        return final_response.value
+    # if options:
+    # https://learn.microsoft.com/en-us/agent-framework/agents/structured-outputs?pivots=programming-language-python
+    # final_response = await response.get_final_response()
+    # return final_response.value
 
-    else:
+    # else:
+    if show_message:
         print("\n[AGENT]: ...")
         async for chunk in response:
             if chunk.text:
                 print(chunk.text, end="", flush=True)
         print()
-        final_response = await response.get_final_response()
-        return final_response.text
+
+    final_response = await response.get_final_response() if show_message else response
+    return final_response
 
 
 async def take_input_from_user() -> str:
@@ -79,6 +97,7 @@ async def main():
         "proposal. Keep your statements concise - within a 100 words,"
         "unless absolutely necessary. Do NOT suggest him to input images"
         "or screenshots since you don't have that capability right now.",
+        # tools=[write_to_file],
     )
 
     # TODO: multi-intent agent like stop, exit etc.
@@ -100,6 +119,7 @@ async def main():
         ),
         session=session,
     )
+    bot_message = bot_message.text
 
     while True:
         user_response = await take_input_from_user()
@@ -117,9 +137,12 @@ async def main():
                 )
             ],
             options={"response_format": UserSatisfaction},
+            show_message=False,
         )
 
-        satisfied = user_satisfaction_info and user_satisfaction_info.satisfied
+        satisfied = (
+            user_satisfaction_info.value and user_satisfaction_info.value.satisfied
+        )
 
         if satisfied:
             break
@@ -127,23 +150,30 @@ async def main():
         bot_message = await run_agent(
             agent=sm_agent, message=user_response, session=session
         )
+        bot_message = bot_message.text
 
     # once user is satisfied
 
-    await run_agent(
+    final_response = await run_agent(
         agent=sm_agent,
         message=Message(
             role="system",
             contents=[
-                "Summarize the discussion you had with the user, the "
-                "deliverables, and tell the user you will return with the "
-                "finished product shortly."
+                "Summarize the discussion you had with the user and the "
+                "deliverables. Write the proposal to the file using the "
+                "write_to_file tool, inform the user of the same and tell the "
+                "user you will return with the finished product shortly."
             ],
         ),
         session=session,
+        options={"response_format": ProposalFileDetails},
     )
     # TODO: a tool to output the plan in a text file. maybe a summary of the transcript too.
     # With confirmation from user.
+    # TODO: change it so that the agent does this
+    write_to_file(
+        filename=final_response.value.filename, contents=final_response.value.proposal
+    )
 
 
 if __name__ == "__main__":
