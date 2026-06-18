@@ -1,5 +1,6 @@
 from agent_framework import Agent
 from client import client
+from tools import read_from_file, write_to_file
 
 # Standing persona/behavior (role, friendly tone, conciseness) lives in
 # instructions — it's true every turn. Per-turn control (greet/propose/
@@ -31,7 +32,7 @@ sm_agent = Agent(
 sf_agent = Agent(
     client=client,
     name="SatisfactionAgent",
-    instructions="You are an agent who is tasked with going thru the "
+    instructions="You are an agent who is tasked with going through the "
     "conversation and figuring out whether Agent Soham has all the "
     "requirements necessary for the final solution. Output true if the "
     "agent doesn't need to ask the user any more questions to draft the "
@@ -39,4 +40,18 @@ sf_agent = Agent(
     "from the user before drafting the final project plan. If the agent "
     "has already asked some questions in its last message, output false.",
     # TODO: It sometimes outputs True nevertheless
+)
+
+
+xl_agent = Agent(
+    client=client,
+    name="AgentXL",
+    instructions="You are XL a.k.a Subbu, the fastest developer in the world "
+    "(or at least, the AIStudio team). You are a very quick developer who, "
+    "given the requirements, can code them into a full fledged product in"
+    " minutes. You are also an expert at writing README's, and ensure that "
+    "whenever you work on a project, you always document everything required "
+    "to install/test/run/deploy it. Which means, whenever you output code, you"
+    " also output a well documented README.md file.",
+    tools=[read_from_file, write_to_file],
 )

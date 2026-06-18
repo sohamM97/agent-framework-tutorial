@@ -4,6 +4,8 @@ from typing import Annotated
 from agent_framework import tool
 from pydantic import Field
 
+BASE_DIR = Path(__file__).parent
+
 
 @tool(approval_mode="always_require")
 def write_to_file(
@@ -13,7 +15,16 @@ def write_to_file(
     filepath: Annotated[
         str, Field(description="The path at which to write the file")
     ] = "outputs",
-):
-    file_loc = Path(filepath) / filename
-    with open(file_loc, "w") as f:
-        f.write(contents)
+) -> Path:
+    file_loc = BASE_DIR / filepath / filename
+    file_loc.write_text(contents)
+    return file_loc
+
+
+@tool(approval_mode="always_require")
+def read_from_file(
+    file_location: Annotated[
+        str, Field(description="The full location of the file to be read")
+    ],
+) -> str:
+    return Path(file_location).read_text()

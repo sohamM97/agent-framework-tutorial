@@ -2,7 +2,7 @@ import asyncio
 from typing import Optional
 
 from agent_framework import Agent, AgentResponse, AgentSession, Message
-from agents import sf_agent, sm_agent
+from agents import sf_agent, sm_agent, xl_agent
 from pydantic import BaseModel
 from tools import write_to_file
 
@@ -95,14 +95,14 @@ async def take_input_from_user() -> str:
 
 async def main():
 
-    session = sm_agent.create_session()
+    sm_session = sm_agent.create_session()
 
     await run_agent(
         agent=sm_agent,
         messages=Message(
             role="system", contents=["Greet the user, and ask him his requirements."]
         ),
-        session=session,
+        session=sm_session,
     )
 
     while True:
@@ -126,7 +126,7 @@ async def main():
         # https://learn.microsoft.com/en-us/agent-framework/agents/conversations/storage
         user_satisfaction_info = await run_agent(
             agent=sf_agent,
-            session=session,
+            session=sm_session,
             messages=user_response,
             options={"response_format": UserSatisfaction},
             show_message=False,
@@ -148,7 +148,7 @@ async def main():
             # discarded and the loop just re-prompts — the user's redirection
             # is lost. Feed `final` into sm_agent so they can course-correct.
 
-        await run_agent(agent=sm_agent, messages=user_response, session=session)
+        await run_agent(agent=sm_agent, messages=user_response, session=sm_session)
 
     # once user is satisfied
 
@@ -159,10 +159,11 @@ async def main():
             role="system",
             contents=[
                 "Generate a proposal file name (just the name, not a full "
-                "path) relevant to the discussion and the proposal itself."
+                "path) relevant to the discussion and the proposal itself. "
+                "The file should be a markdown file."
             ],
         ),
-        session=session,
+        session=sm_session,
         options={"response_format": ProposalFileDetails},
         show_message=False,
     )
@@ -171,7 +172,7 @@ async def main():
     # We write the proposal file ourselves to keep it deterministic. Else,
     # Agent Soham tended to write python scripts in spite of being instructed
     # against that in the system prompt.
-    write_to_file(
+    proposal_file_path = write_to_file(
         filename=proposal_details.filename, contents=proposal_details.proposal
     )
 
@@ -181,28 +182,43 @@ async def main():
             role="system",
             contents=[
                 "Summarize the discussion, tell the user "
-                "that the proposal file is present, give him the name, and "
-                "tell him he will have a finished product shortly. DO NOT ask "
-                "any questions at this stage, as this is supposed to be the "
+                f"that the proposal file is present at {proposal_file_path}, "
+                "give him the name, and tell him he will have a finished "
+                "product shortly. DO NOT ask any questions at this stage, as "
+                "this is supposed to be the "
                 "final approach."
             ],
         ),
-        session=session,
+        session=sm_session,
     )
 
-    # Claude: debug view only — peek at the raw in-memory history. The default
-    # InMemoryHistoryProvider namespaces its state under source_id "in_memory"
-    # (_agents.py:475 → state.setdefault(provider.source_id, {})), so messages
-    # live at state["in_memory"]["messages"], not state["messages"]. Reaching
-    # in like this is NOT supported (MS docs: treat AgentSession as opaque) —
-    # fine for eyeballing, including the sf_agent session pollution.
-    print("******* FINAL TRANSCRIPT **************")
-    for message in session.state.get("in_memory", {}).get("messages", []):
-        # Claude: author_name is the agent that produced it (AgentSoham /
-        # SatisfactionAgent); falls back to the bare role (user/system/tool).
-        who = message.author_name or message.role
-        print(f"[{who}]: {message.text}")
-    print("***************************************")
+    xl_session = xl_agent.create_session()
+
+    await run_agent(
+        agent=xl_agent,
+        messages=Message(
+            role="system",
+            contents=[
+                f"Read the contents of this proposal: {proposal_file_path} and"
+                " code a working solution."
+            ],
+        ),
+        session=xl_session,
+    )
+
+    # # Claude: debug view only — peek at the raw in-memory history. The default
+    # # InMemoryHistoryProvider namespaces its state under source_id "in_memory"
+    # # (_agents.py:475 → state.setdefault(provider.source_id, {})), so messages
+    # # live at state["in_memory"]["messages"], not state["messages"]. Reaching
+    # # in like this is NOT supported (MS docs: treat AgentSession as opaque) —
+    # # fine for eyeballing, including the sf_agent session pollution.
+    # print("******* FINAL TRANSCRIPT **************")
+    # for message in session.state.get("in_memory", {}).get("messages", []):
+    #     # Claude: author_name is the agent that produced it (AgentSoham /
+    #     # SatisfactionAgent); falls back to the bare role (user/system/tool).
+    #     who = message.author_name or message.role
+    #     print(f"[{who}]: {message.text}")
+    # print("***************************************")
 
     # TODO: maybe a summary of the transcript too. With confirmation from user.
 

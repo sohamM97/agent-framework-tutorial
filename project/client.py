@@ -1,10 +1,11 @@
 import os
+from pathlib import Path
 
 # TODO: learn more about ChatClient vs ChatCompletionClient
 from agent_framework.openai import OpenAIChatCompletionClient
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(Path(__file__).parent / ".env")
 
 client = OpenAIChatCompletionClient(
     model=os.environ["AZURE_OPENAI_DEPLOYMENT_NAME"],
