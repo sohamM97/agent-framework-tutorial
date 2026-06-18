@@ -29,7 +29,7 @@ class ProposalFileDetails(BaseModel):
 
 
 # TODO: facing some issue in always_require. Have to look into that.
-@tool(approval_mode="never_require")
+@tool(approval_mode="always_require")
 def write_to_file(
     # TODO: is annotation required for the LLM? Or just for us?
     filename: Annotated[str, Field(description="The name of the file to create")],
@@ -45,7 +45,7 @@ def write_to_file(
 
 async def run_agent(
     agent: Agent,
-    message: str | Message | list[Message] = "",
+    messages: str | Message | list[Message] = "",
     session: Optional[AgentSession] = None,
     options: Optional[dict] = None,
     # TODO: when options are given, the message is the final json
@@ -53,18 +53,47 @@ async def run_agent(
     # If not, we can get rid of this extra flag.
     show_message: bool = True,
 ) -> AgentResponse:
-    response = await agent.run(
-        message, session=session, stream=show_message, options=options
+    has_user_input_requests = True
+    response = None
+    # Claude: working list of messages to send on the next agent.run. Accept a
+    # single str/Message or a ready-made list of Messages without nesting the
+    # latter.
+    pending: list = list(messages) if isinstance(messages, list) else [messages]
+
+    while has_user_input_requests:
+        has_user_input_requests = False
+        response = await agent.run(
+            pending, session=session, stream=show_message, options=options
+        )
+        pending = []
+
+        if show_message:
+            print("\n[AGENT]: ...")
+            async for chunk in response:
+                if chunk.text:
+                    print(chunk.text, end="", flush=True)
+
+                if chunk.user_input_requests:
+                    has_user_input_requests = True
+
+                    for request in chunk.user_input_requests:
+                        print("\nApproval needed:")
+                        print(f" Function: {request.function_call.name}")
+                        print(f" Arguments: {request.function_call.arguments}")
+                        print("Enter 'y' or 'n'.")
+
+                        approval_flag = await take_input_from_user()
+                        approval_flag = approval_flag.lower() == "y"
+                        pending.append(
+                            request.to_function_approval_response(
+                                approved=approval_flag
+                            )
+                        )
+            print()
+
+    final_response = (
+        await response.get_final_response() if show_message and response else response
     )
-
-    if show_message:
-        print("\n[AGENT]: ...")
-        async for chunk in response:
-            if chunk.text:
-                print(chunk.text, end="", flush=True)
-        print()
-
-    final_response = await response.get_final_response() if show_message else response
     return final_response
 
 
@@ -105,6 +134,7 @@ async def main():
         ", unless absolutely necessary. Do NOT suggest him to input images"
         " or screenshots since you don't have that capability right now."
         " DO NOT generate any code samples, that is not your job.",
+        # TODO: it didn't listen. it continued generating code samples :(
         # TODO: maybe to prevent it from arbitrarily writing code, the earlier
         # approach where WE output the file, is a better approach. The agent
         # responsible for writing code can use it as a tool.
@@ -122,12 +152,14 @@ async def main():
         "requirements necessary for the final solution. Output true if the "
         "agent doesn't need to ask the user any more questions to draft the "
         "final proposal. Output false if you feel the agent needs more inputs "
-        "from the user before drafting the final project plan.",
+        "from the user before drafting the final project plan. If the agent "
+        "has already asked some questions in its last message, output false.",
+        # TODO: It sometimes outputs True nevertheless
     )
 
     bot_message = await run_agent(
         agent=sm_agent,
-        message=Message(
+        messages=Message(
             role="system", contents=["Greet the user, and ask him his requirements."]
         ),
         session=session,
@@ -137,22 +169,26 @@ async def main():
     while True:
         user_response = await take_input_from_user()
 
-        bot_message = await run_agent(
-            agent=sm_agent, message=user_response, session=session
-        )
-        bot_message = bot_message.text
-
-        # TODO: Claude Review: (#2 session pollution) sf_agent runs on the
-        # shared session, so its empty-input + {satisfied} verdict gets written
-        # back into sm_agent's history (InMemoryHistoryProvider stores messages
-        # in session state — _sessions.py:838/854). Fix: read the transcript
-        # via `session.state.get("messages", [])` and pass it as the judge's
-        # `message` WITHOUT a session=, so the judge stays stateless and writes
-        # nothing back. (Optionally append a trailing user Message telling it to
-        # output its verdict now.)
+        # Claude NOTE: sf_agent (the judge) shares sm_agent's session, so its input +
+        # {satisfied} verdict get written into the history that BOTH agents
+        # replay each turn ("session pollution"). Consequences, accepted for
+        # now since conversations are short:
+        #   1. The judge re-reads its own past verdicts and can anchor on them
+        #      — a likely cause of the occasional wrong "True".
+        #   2. sm_agent sees the JSON verdicts as its own assistant turns (the
+        #      wire format keys off role, not author_name), so it can drift
+        #      off-persona as they accumulate.
+        #   3. Token bloat: every verdict is replayed on all later runs, growing
+        #      with the conversation.
+        # Decoupling fix if this ever bites: hand the judge its own transcript
+        # and run it WITHOUT session= so it stays stateless and writes nothing
+        # back. Don't scrape session.state to build that transcript — MS docs
+        # say treat AgentSession as opaque:
+        # https://learn.microsoft.com/en-us/agent-framework/agents/conversations/storage
         user_satisfaction_info = await run_agent(
             agent=sf_agent,
             session=session,
+            messages=user_response,
             options={"response_format": UserSatisfaction},
             show_message=False,
         )
@@ -173,11 +209,16 @@ async def main():
             # discarded and the loop just re-prompts — the user's redirection
             # is lost. Feed `final` into sm_agent so they can course-correct.
 
+        bot_message = await run_agent(
+            agent=sm_agent, messages=user_response, session=session
+        )
+        bot_message = bot_message.text
+
     # once user is satisfied
 
     await run_agent(
         agent=sm_agent,
-        message=Message(
+        messages=Message(
             role="system",
             contents=[
                 "Generate a proposal file name relevant to the discussion and "
@@ -191,6 +232,20 @@ async def main():
         ),
         session=session,
     )
+
+    # Claude: debug view only — peek at the raw in-memory history. The default
+    # InMemoryHistoryProvider namespaces its state under source_id "in_memory"
+    # (_agents.py:475 → state.setdefault(provider.source_id, {})), so messages
+    # live at state["in_memory"]["messages"], not state["messages"]. Reaching
+    # in like this is NOT supported (MS docs: treat AgentSession as opaque) —
+    # fine for eyeballing, including the sf_agent session pollution.
+    print("******* FINAL TRANSCRIPT **************")
+    for message in session.state.get("in_memory", {}).get("messages", []):
+        # Claude: author_name is the agent that produced it (AgentSoham /
+        # SatisfactionAgent); falls back to the bare role (user/system/tool).
+        who = message.author_name or message.role
+        print(f"[{who}]: {message.text}")
+    print("***************************************")
 
     # TODO: maybe a summary of the transcript too. With confirmation from user.
 
