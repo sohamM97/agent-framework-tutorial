@@ -136,14 +136,20 @@ async def main():
 
     while True:
         user_response = await take_input_from_user()
-        # TODO: Claude Review: (#1 stale check + #2 session pollution) sf_agent
-        # reads the shared session here, but (a) user_response isn't in the
-        # session yet, so the judge decides one turn behind, and (b) running
-        # sf_agent on the shared session writes its empty-input + {satisfied}
-        # verdict back into sm_agent's history (InMemoryHistoryProvider stores
-        # messages in session state — _agents.py:416-420). Prefer handing the
-        # judge the transcript explicitly (bot_message + user_response) and
-        # keeping it off this session.
+
+        bot_message = await run_agent(
+            agent=sm_agent, message=user_response, session=session
+        )
+        bot_message = bot_message.text
+
+        # TODO: Claude Review: (#2 session pollution) sf_agent runs on the
+        # shared session, so its empty-input + {satisfied} verdict gets written
+        # back into sm_agent's history (InMemoryHistoryProvider stores messages
+        # in session state — _sessions.py:838/854). Fix: read the transcript
+        # via `session.state.get("messages", [])` and pass it as the judge's
+        # `message` WITHOUT a session=, so the judge stays stateless and writes
+        # nothing back. (Optionally append a trailing user Message telling it to
+        # output its verdict now.)
         user_satisfaction_info = await run_agent(
             agent=sf_agent,
             session=session,
@@ -163,15 +169,9 @@ async def main():
             final = await take_input_from_user()
             if final.lower() == "y":
                 break
-
-        # TODO: Claude Review: (#3) on a non-"y" answer, `final` is discarded
-        # and we replay the stale `user_response` — the user's redirection is
-        # lost. Feed `final` back into sm_agent instead so they can course-
-        # correct.
-        bot_message = await run_agent(
-            agent=sm_agent, message=user_response, session=session
-        )
-        bot_message = bot_message.text
+            # TODO: Claude Review: (#3) on a non-"y" answer, `final` is
+            # discarded and the loop just re-prompts — the user's redirection
+            # is lost. Feed `final` into sm_agent so they can course-correct.
 
     # once user is satisfied
 
