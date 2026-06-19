@@ -32,7 +32,7 @@ This is an exploratory project and the user wants a mentor, not just an implemen
 
 ## Commands
 
-Uses **uv** (`uv.lock`, `.python-version` = 3.11). No build step, no test suite.
+Uses **uv** (`uv.lock`, `.python-version` = 3.14). No build step, no test suite.
 
 - Run the project: from inside `project/`, `uv run main.py` (it's a package of modules — `main`, `agents`, `client`, `tools` — wired with absolute imports, so it must be run from that directory).
 - Run a tutorial: from the repo root, `uv run python tutorials/01_hello_agent.py` (these are still standalone single-file scripts).

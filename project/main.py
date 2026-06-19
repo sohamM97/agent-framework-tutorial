@@ -174,6 +174,13 @@ async def main():
 
     # Create a project directory that will consist of the proposal and the
     # project source code
+    # TODO: Claude Review: path-kind discrepancy — `project_path` is RELATIVE
+    # (Path("outputs")/...), but `proposal_file_path` returned below is ABSOLUTE
+    # (BASE_DIR-rooted by write_to_file). The xl_agent prompt interpolates both,
+    # so the agent sees one absolute and one relative path. It works only because
+    # write_to_file re-roots every filepath under BASE_DIR — a latent footgun if
+    # that ever changes. Make them consistent: either root project_path at
+    # BASE_DIR too, or have write_to_file return a path relative to BASE_DIR.
     project_path = Path("outputs") / proposal_details.project_name
 
     # We write the proposal file ourselves to keep it deterministic. Else,
