@@ -15,15 +15,14 @@ def write_to_file(
     filepath: Annotated[
         str, Field(description="The path at which to write the file")
     ] = "outputs",
-) -> Path:
-    file_abs_path: Path = BASE_DIR / filepath
-
-    if not file_abs_path.exists():
-        file_abs_path.mkdir(parents=True, exist_ok=True)
-
-    file_loc = file_abs_path / filename
-    file_loc.write_text(contents)
-    return file_loc
+) -> Path | str:
+    try:
+        file_loc = BASE_DIR / filepath / filename
+        file_loc.parent.mkdir(parents=True, exist_ok=True)
+        file_loc.write_text(contents)
+        return file_loc
+    except Exception as exc:
+        return f"Failed to write file: {exc}"
 
 
 @tool(approval_mode="always_require")
@@ -32,4 +31,7 @@ def read_from_file(
         str, Field(description="The full location of the file to be read")
     ],
 ) -> str:
-    return Path(file_location).read_text()
+    try:
+        return Path(file_location).read_text()
+    except Exception as exc:
+        return f"Failed to read file: {exc}"
