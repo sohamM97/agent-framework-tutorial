@@ -3,26 +3,12 @@ from pathlib import Path
 from typing import Optional
 
 from agent_framework import Agent, AgentResponse, AgentSession, Message
-from agents import sf_agent, sm_agent, xl_agent
-from pydantic import BaseModel
+from agents import judge_agent, sm_agent, xl_agent
+from models import ProjectDetails, RequirementsReady
 from tools import write_to_file
 
 # TODO: something with context provider
-
-
-class UserSatisfaction(BaseModel):
-    # TODO: Claude Review: consider adding a `reasoning: str` field before
-    # `satisfied` to give the model room to think — usually improves accuracy.
-    # TODO: Claude Review: naming — the judge now decides whether the agent has
-    # ENOUGH REQUIREMENTS, not whether the user is satisfied. `UserSatisfaction`
-    # / `satisfied` is a misnomer; `RequirementsReady` / `ready` would match the
-    # actual semantics (and reduce the model's confusion about what it judges).
-    satisfied: bool
-
-
-class ProjectDetails(BaseModel):
-    project_name: str
-    proposal: str
+# TODO: how to incorporate workflows into all this.
 
 
 # TODO: Claude Review: cognitive complexity is high (SonarQube: 22 > 15
@@ -112,7 +98,7 @@ async def main():
     while True:
         user_response = await take_input_from_user()
 
-        # Claude NOTE: sf_agent (the judge) shares sm_agent's session, so its input +
+        # Claude NOTE: judge_agent (the judge) shares sm_agent's session, so its input +
         # {satisfied} verdict get written into the history that BOTH agents
         # replay each turn ("session pollution"). Consequences, accepted for
         # now since conversations are short:
@@ -128,19 +114,17 @@ async def main():
         # back. Don't scrape session.state to build that transcript — MS docs
         # say treat AgentSession as opaque:
         # https://learn.microsoft.com/en-us/agent-framework/agents/conversations/storage
-        user_satisfaction_info = await run_agent(
-            agent=sf_agent,
+        req_ready_info = await run_agent(
+            agent=judge_agent,
             session=sm_session,
             messages=user_response,
-            options={"response_format": UserSatisfaction},
+            options={"response_format": RequirementsReady},
             show_message=False,
         )
 
-        satisfied = (
-            user_satisfaction_info.value and user_satisfaction_info.value.satisfied
-        )
+        ready = req_ready_info.value and req_ready_info.value.ready
 
-        if satisfied:
+        if ready:
             print(
                 "\n[AGENT]: Looks like we have everything we need. Should we "
                 "proceed with the final proposal? (y/n)"
@@ -154,7 +138,7 @@ async def main():
 
         await run_agent(agent=sm_agent, messages=user_response, session=sm_session)
 
-    # once user is satisfied
+    # once all requirements are ready
 
     bot_response = await run_agent(
         agent=sm_agent,
@@ -231,11 +215,11 @@ async def main():
     # # (_agents.py:475 → state.setdefault(provider.source_id, {})), so messages
     # # live at state["in_memory"]["messages"], not state["messages"]. Reaching
     # # in like this is NOT supported (MS docs: treat AgentSession as opaque) —
-    # # fine for eyeballing, including the sf_agent session pollution.
+    # # fine for eyeballing, including the judge_agent session pollution.
     # print("******* FINAL TRANSCRIPT **************")
     # for message in session.state.get("in_memory", {}).get("messages", []):
     #     # Claude: author_name is the agent that produced it (AgentSoham /
-    #     # SatisfactionAgent); falls back to the bare role (user/system/tool).
+    #     # JudgeAgent); falls back to the bare role (user/system/tool).
     #     who = message.author_name or message.role
     #     print(f"[{who}]: {message.text}")
     # print("***************************************")

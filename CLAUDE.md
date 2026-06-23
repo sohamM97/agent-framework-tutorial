@@ -47,10 +47,10 @@ Ruff (`pyproject.toml`): isort import-sorting on (`extend-select = ["I"]`); unus
 
 - `client.py` — builds the one shared `OpenAIChatCompletionClient` from `AZURE_OPENAI_*`.
 - `tools.py` — the `write_to_file` tool (`approval_mode="always_require"`).
-- `agents.py` — the two agents: `sm_agent` ("AgentSoham", the lead-developer persona) and `sf_agent` ("SatisfactionAgent", an LLM-as-judge).
+- `agents.py` — the two agents: `sm_agent` ("AgentSoham", the lead-developer persona) and `judge_agent` ("SatisfactionAgent", an LLM-as-judge).
 - `main.py` — the orchestration loop plus `run_agent()`, a helper that wraps `agent.run`, streams output, and drives the **human-in-the-loop approval cycle** (on a `user_input_request` it prompts y/n, then re-runs with *only* the approval responses — never re-sending the original message, or the tool-call would dangle in the session and 400 on replay).
 
-The conversation flow in `main()`: greet → each turn ask `sf_agent` (structured `response_format=UserSatisfaction`) whether enough requirements are gathered; if not, `sm_agent` replies; once satisfied + user confirms, a final run writes the proposal via the tool. **Both agents currently share one session** — convenient but it pollutes `sm_agent`'s history with the judge's verdicts (documented inline as a `Claude NOTE:`); the decoupling fix is to run the judge stateless with its own transcript.
+The conversation flow in `main()`: greet → each turn ask `judge_agent` (structured `response_format=UserSatisfaction`) whether enough requirements are gathered; if not, `sm_agent` replies; once satisfied + user confirms, a final run writes the proposal via the tool. **Both agents currently share one session** — convenient but it pollutes `sm_agent`'s history with the judge's verdicts (documented inline as a `Claude NOTE:`); the decoupling fix is to run the judge stateless with its own transcript.
 
 Whatever the file, each agent run follows the same shape:
 

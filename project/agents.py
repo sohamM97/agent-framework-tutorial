@@ -8,10 +8,9 @@ from tools import read_from_file, write_to_file
 # choice.
 # TODO: need cap on no. of messages as a safeguard. else if the judge never
 # says satisfied, the loop keeps going forever.
-# TODO: Claude Review: naming — `sm_agent` / `sf_agent` are cryptic (referenced
-# all over main.py). Nothing signals that one is the lead-dev/Soham agent and
-# the other the satisfaction judge. `lead_agent` / `judge_agent` (or
-# `dev_agent` / `satisfaction_agent`) would be self-documenting.
+# TODO: Claude Review: naming — `sm_agent` is cryptic (referenced all over
+# main.py); nothing signals it's the lead-dev/Soham agent. `lead_agent` or
+# `dev_agent` would be self-documenting. (`judge_agent` is now clear.)
 sm_agent = Agent(
     client=client,
     name="AgentSoham",
@@ -29,9 +28,9 @@ sm_agent = Agent(
 
 
 # TODO: multi-intent agent like stop, exit etc.
-sf_agent = Agent(
+judge_agent = Agent(
     client=client,
-    name="SatisfactionAgent",
+    name="JudgeAgent",
     instructions="You are an agent who is tasked with going through the "
     "conversation and figuring out whether Agent Soham has all the "
     "requirements necessary for the final solution. Output true if the "
