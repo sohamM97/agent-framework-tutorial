@@ -9,14 +9,25 @@ from tools import write_to_file
 
 # TODO: something with context provider
 # TODO: how to incorporate workflows into all this.
+# TODO: difference between session and context?
 
 
-# TODO: Claude Review: cognitive complexity is high (SonarQube: 22 > 15
-# allowed) from the nested while/for/for/if. Extract the inner
-# `for request in chunk.user_input_requests` body into an async helper
-# `_collect_approvals(chunk) -> list` called per-chunk inside the stream loop
-# (text printing stays inline). It returns that chunk's approval responses;
-# the caller extends `pending` and flips the flag. Drops one nesting level.
+async def _collect_approvals(chunk) -> list:
+    approvals = []
+
+    for request in chunk.user_input_requests:
+        print("\nApproval needed:")
+        print(f" Function: {request.function_call.name}")
+        print(f" Arguments: {request.function_call.arguments}")
+        print("Enter 'y' or 'n'.")
+
+        approval_flag = await take_input_from_user()
+        approval_flag = approval_flag.lower() == "y"
+        approvals.append(request.to_function_approval_response(approved=approval_flag))
+
+    return approvals
+
+
 async def run_agent(
     agent: Agent,
     messages: str | Message | list[Message] = "",
@@ -39,36 +50,27 @@ async def run_agent(
     # latter.
     pending: list = list(messages) if isinstance(messages, list) else [messages]
 
+    if not show_message:
+        return await agent.run(pending, session=session, options=options)
+
     while has_user_input_requests:
         has_user_input_requests = False
         response = await agent.run(
-            pending, session=session, stream=show_message, options=options
+            pending, session=session, stream=True, options=options
         )
         pending = []
 
-        if show_message:
-            print("\n[AGENT]: ...")
-            async for chunk in response:
-                if chunk.text:
-                    print(chunk.text, end="", flush=True)
+        print("\n[AGENT]: ...")
+        async for chunk in response:
+            if chunk.text:
+                print(chunk.text, end="", flush=True)
 
-                if chunk.user_input_requests:
-                    has_user_input_requests = True
+            if chunk.user_input_requests:
+                has_user_input_requests = True
+                approvals = await _collect_approvals(chunk)
+                pending.extend(approvals)
 
-                    for request in chunk.user_input_requests:
-                        print("\nApproval needed:")
-                        print(f" Function: {request.function_call.name}")
-                        print(f" Arguments: {request.function_call.arguments}")
-                        print("Enter 'y' or 'n'.")
-
-                        approval_flag = await take_input_from_user()
-                        approval_flag = approval_flag.lower() == "y"
-                        pending.append(
-                            request.to_function_approval_response(
-                                approved=approval_flag
-                            )
-                        )
-            print()
+        print()
 
     final_response = (
         await response.get_final_response() if show_message and response else response
