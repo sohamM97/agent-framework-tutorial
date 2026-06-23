@@ -72,9 +72,7 @@ async def run_agent(
 
         print()
 
-    final_response = (
-        await response.get_final_response() if show_message and response else response
-    )
+    final_response = await response.get_final_response() if response else response
     return final_response
 
 
