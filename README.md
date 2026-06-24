@@ -51,6 +51,8 @@ Both of the above lose information, so a smarter approach is:
 
 # KodeKloud lab adjustments
 
+> **Scope — proxy is lab-only.** Everything in this section is specific to the KodeKloud tutorial labs, which run against a **proxy gateway** (`OPENAI_API_BASE`). My own `project/` does **not** use that proxy — it runs against a **real Azure OpenAI resource** (`OpenAIChatCompletionClient` with `azure_endpoint` + the `AZURE_OPENAI_*` vars). So the proxy-only quirks below (e.g. the `/responses` → `404` issue) don't apply to `project/`.
+
 For the youtube/udemy tutorial KodeKloud labs:
 
 ## Setup (applies to the entire lab):
