@@ -11,6 +11,16 @@ from tools import write_to_file
 # TODO: how to incorporate workflows into all this.
 # TODO: difference between session and context?
 
+# TODO: overall flow:
+# 1. Loop of Soham agent asking asking reqs till satisfied (done)
+# 2. Loop of XL coding and Amma reviewing till Amma satisfied
+# 3. Loop of Vivek reviewing, XL coding, amma reviewing till vivek satisfied
+
+# TODO: how can workflows simplify the above flow?
+# maybe handoff can switch seamlessly between the agents without the defined
+# flow. good for cases like "i have so and so source code already, review it"
+# which will trigger amma agent directly instead of going thru the whole flow.
+
 
 async def _collect_approvals(chunk) -> list:
     approvals = []
@@ -212,17 +222,24 @@ async def main():
         session=xl_session,
     )
 
-    amma_session = amma_agent.create_session()
+    lgtm = False
 
-    code_review = await run_agent(
-        agent=amma_agent,
-        messages=Message(
-            role="system", contents=[f"Review the code at {project_path / 'out'}"]
-        ),
-        session=amma_session,
-    )
+    while True:
+        amma_session = amma_agent.create_session()
+        # TODO: agent hallucinates file names which are not present at the out
+        # directory. give it a list files tool.
+        code_review = await run_agent(
+            agent=amma_agent,
+            messages=Message(
+                role="system", contents=[f"Review the code at {project_path / 'out'}"]
+            ),
+            session=amma_session,
+        )
+        lgtm = code_review.value and code_review.value.lgtm
 
-    if code_review.value and not code_review.value.lgtm:
+        if lgtm:
+            break
+
         # TODO: make sure agent reads existing files using read tool also to
         # verify review points. Till now was only using write tools.
         await run_agent(
@@ -232,7 +249,8 @@ async def main():
                 contents=[
                     "Code review has flagged the following issues: "
                     + code_review.value.comments
-                    + " Fix them."
+                    + " Fix them. If needed, make sure you read existing code "
+                    + "to verify correctness before writing your fixes."
                 ],
             ),
             session=xl_session,

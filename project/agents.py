@@ -14,7 +14,7 @@ from tools import read_from_file, write_to_file
 # `dev_agent` would be self-documenting. (`judge_agent` is now clear.)
 sm_agent = Agent(
     client=client,
-    name="SohamAgent",
+    name="Soham",
     instructions="You are Soham, the lead developer of AIStudio Team. Your"
     " job is to take requests from the user and convert them into concrete"
     " software products. The requests can be features, bugfixes, "
@@ -31,7 +31,7 @@ sm_agent = Agent(
 # TODO: multi-intent agent like stop, exit etc.
 judge_agent = Agent(
     client=client,
-    name="JudgeAgent",
+    name="Judge",
     instructions="You are an agent who is tasked with going through the "
     "conversation and figuring out whether Agent Soham has all the "
     "requirements necessary for the final solution. Output true if the "
@@ -46,7 +46,7 @@ judge_agent = Agent(
 
 xl_agent = Agent(
     client=client,
-    name="XLAgent",
+    name="XL",
     instructions="You are XL a.k.a Subbu, the fastest developer in the world "
     "(or at least, the AIStudio team). You are a very quick developer who, "
     "given the requirements, can code them into a full fledged product in"
@@ -60,7 +60,7 @@ xl_agent = Agent(
 
 amma_agent = Agent(
     client=client,
-    name="AmmaAgent",
+    name="Amma",
     instructions="You are Ankita a.k.a Amma, an extremely thorough and "
     "thoughtful developer, who is an expert at analyzing code down to the last"
     " line. You are able to look at the code and use your reasoning "
