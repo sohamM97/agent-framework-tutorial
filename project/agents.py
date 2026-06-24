@@ -1,5 +1,6 @@
 from agent_framework import Agent
 from client import client
+from models import CodeReviewOutput, RequirementsReady
 from tools import read_from_file, write_to_file
 
 # Standing persona/behavior (role, friendly tone, conciseness) lives in
@@ -13,7 +14,7 @@ from tools import read_from_file, write_to_file
 # `dev_agent` would be self-documenting. (`judge_agent` is now clear.)
 sm_agent = Agent(
     client=client,
-    name="AgentSoham",
+    name="SohamAgent",
     instructions="You are Soham, the lead developer of AIStudio Team. Your"
     " job is to take requests from the user and convert them into concrete"
     " software products. The requests can be features, bugfixes, "
@@ -39,12 +40,13 @@ judge_agent = Agent(
     "from the user before drafting the final project plan. If the agent "
     "has already asked some questions in its last message, output false.",
     # TODO: It sometimes outputs True nevertheless
+    default_options={"response_format": RequirementsReady},
 )
 
 
 xl_agent = Agent(
     client=client,
-    name="AgentXL",
+    name="XLAgent",
     instructions="You are XL a.k.a Subbu, the fastest developer in the world "
     "(or at least, the AIStudio team). You are a very quick developer who, "
     "given the requirements, can code them into a full fledged product in"
@@ -56,4 +58,16 @@ xl_agent = Agent(
 )
 
 
-# TODO: code review agent can use thinking
+amma_agent = Agent(
+    client=client,
+    name="AmmaAgent",
+    instructions="You are Ankita a.k.a Amma, an extremely thorough and "
+    "thoughtful developer, who is an expert at analyzing code down to the last"
+    " line. You are able to look at the code and use your reasoning "
+    "capabilities to think about all possible edge cases the developer has "
+    "missed. Once you're done, output a boolean - lgtm (looks good to me) "
+    "and your review comments.",
+    tools=[read_from_file],
+    # TODO: show reasoning steps
+    default_options={"response_format": CodeReviewOutput, "reasoning_effort": "high"},
+)

@@ -3,8 +3,8 @@ from pathlib import Path
 from typing import Optional
 
 from agent_framework import Agent, AgentResponse, AgentSession, Message
-from agents import judge_agent, sm_agent, xl_agent
-from models import ProjectDetails, RequirementsReady
+from agents import amma_agent, judge_agent, sm_agent, xl_agent
+from models import ProjectDetails
 from tools import write_to_file
 
 # TODO: something with context provider
@@ -60,7 +60,7 @@ async def run_agent(
         )
         pending = []
 
-        print("\n[AGENT]: ...")
+        print(f"\n[AGENT {agent.name}]: ...")
         async for chunk in response:
             if chunk.text:
                 print(chunk.text, end="", flush=True)
@@ -118,7 +118,6 @@ async def main():
             agent=judge_agent,
             session=sm_session,
             messages=user_response,
-            options={"response_format": RequirementsReady},
             show_message=False,
         )
 
@@ -192,6 +191,9 @@ async def main():
         session=sm_session,
     )
 
+    # Note: Agents with tools always need sessions.
+    # TODO: investigate why
+    # TODO: what about sharing sessions like sm_agent and judge_agent?
     xl_session = xl_agent.create_session()
 
     await run_agent(
@@ -210,6 +212,32 @@ async def main():
         session=xl_session,
     )
 
+    amma_session = amma_agent.create_session()
+
+    code_review = await run_agent(
+        agent=amma_agent,
+        messages=Message(
+            role="system", contents=[f"Review the code at {project_path / 'out'}"]
+        ),
+        session=amma_session,
+    )
+
+    if code_review.value and not code_review.value.lgtm:
+        # TODO: make sure agent reads existing files using read tool also to
+        # verify review points. Till now was only using write tools.
+        await run_agent(
+            agent=xl_agent,
+            messages=Message(
+                role="system",
+                contents=[
+                    "Code review has flagged the following issues: "
+                    + code_review.value.comments
+                    + " Fix them."
+                ],
+            ),
+            session=xl_session,
+        )
+
     # # Claude: debug view only — peek at the raw in-memory history. The default
     # # InMemoryHistoryProvider namespaces its state under source_id "in_memory"
     # # (_agents.py:475 → state.setdefault(provider.source_id, {})), so messages
@@ -218,7 +246,7 @@ async def main():
     # # fine for eyeballing, including the judge_agent session pollution.
     # print("******* FINAL TRANSCRIPT **************")
     # for message in session.state.get("in_memory", {}).get("messages", []):
-    #     # Claude: author_name is the agent that produced it (AgentSoham /
+    #     # Claude: author_name is the agent that produced it (SohamAgent /
     #     # JudgeAgent); falls back to the bare role (user/system/tool).
     #     who = message.author_name or message.role
     #     print(f"[{who}]: {message.text}")

@@ -10,3 +10,8 @@ class RequirementsReady(BaseModel):
 class ProjectDetails(BaseModel):
     project_name: str
     proposal: str
+
+
+class CodeReviewOutput(BaseModel):
+    lgtm: bool
+    comments: str
