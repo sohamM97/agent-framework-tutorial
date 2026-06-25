@@ -13,7 +13,7 @@ from tools import write_to_file
 
 # TODO: overall flow:
 # 1. Loop of Soham agent asking asking reqs till satisfied (done)
-# 2. Loop of XL coding and Amma reviewing till Amma satisfied
+# 2. Loop of XL coding and Amma reviewing till Amma satisfied (done)
 # 3. Loop of Vivek reviewing, XL coding, amma reviewing till vivek satisfied
 
 # TODO: how can workflows simplify the above flow?

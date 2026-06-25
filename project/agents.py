@@ -9,9 +9,6 @@ from tools import get_files_under_dir, read_from_file, write_to_file
 # choice.
 # TODO: need cap on no. of messages as a safeguard. else if the judge never
 # says satisfied, the loop keeps going forever.
-# TODO: Claude Review: naming — `sm_agent` is cryptic (referenced all over
-# main.py); nothing signals it's the lead-dev/Soham agent. `lead_agent` or
-# `dev_agent` would be self-documenting. (`judge_agent` is now clear.)
 sm_agent = Agent(
     client=client,
     name="Soham",
