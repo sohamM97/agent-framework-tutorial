@@ -55,6 +55,7 @@ xl_agent = Agent(
 )
 
 
+# TODO: try fan out subagents here, following the same philosophy as claude code review
 amma_agent = Agent(
     client=client,
     name="Amma",
