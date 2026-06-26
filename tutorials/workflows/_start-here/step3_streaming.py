@@ -37,6 +37,11 @@ async def main():
         model=os.environ["FOUNDRY_MODEL"],
         credential=AzureCliCredential(),
     )
+
+    # TODO: what is the difference between agent and agent executor?
+    # TODO: according to claude in project/workflow_graph.py, executors
+    # internally create sessions for agents. In this example, if we wanted to
+    # have sessions, what would be the solution?
     writer_agent = Agent(
         client=client,
         instructions=(
@@ -57,14 +62,23 @@ async def main():
 
     # Build the workflow using the fluent builder.
     # Set the start node via constructor and connect an edge from writer to reviewer.
-    workflow = WorkflowBuilder(start_executor=writer_agent).add_edge(writer_agent, reviewer_agent).build()
+    workflow = (
+        WorkflowBuilder(start_executor=writer_agent)
+        .add_edge(writer_agent, reviewer_agent)
+        .build()
+    )
 
     # Track the last author to format streaming output.
     last_author: str | None = None
 
     # Run the workflow with the user's initial message and stream events as they occur.
     async for event in workflow.run(
-        Message("user", ["Create a slogan for a new electric SUV that is affordable and fun to drive."]),
+        Message(
+            "user",
+            [
+                "Create a slogan for a new electric SUV that is affordable and fun to drive."
+            ],
+        ),
         stream=True,
     ):
         # The outputs of the workflow are whatever the agents produce. So the events are expected to

@@ -91,6 +91,8 @@ class UpperCase(Executor):
 
         result = text.upper()
 
+        # TODO: understand what is this ctx and how to use it
+        # as in in which case do we use which function
         # Send the result to the next executor in the workflow.
         await ctx.send_message(result)
 

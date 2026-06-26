@@ -33,6 +33,7 @@ Two wins this gives us over main.py for free:
 import asyncio
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from agent_framework import (
     AgentExecutor,
@@ -60,12 +61,15 @@ from tools import write_to_file
 @dataclass
 class UserPrompt:
     text: str
-    kind: str  # "requirements" | "confirm"
+    kind: Literal["requirements", "confirm"]  # "requirements" | "confirm"
 
 
 # ---------------------------------------------------------------------------
 # Front half: interactive requirements gathering (human-in-the-loop)
 # ---------------------------------------------------------------------------
+# TODO: understand how this works as this is a loop in a single executor:
+# how does it decide when to end?
+# TODO: once that's done, can we figure out how to do it thru adding edges etc
 class GatherRequirements(Executor):
     """Owns the Soham<->user<->Judge loop, then emits a ProjectDetails downstream.
 
@@ -76,9 +80,9 @@ class GatherRequirements(Executor):
     response_handler is the loop body) instead of a straight-line `while`.
     """
 
-    def __init__(self, dev_agent, judge, dev_session, id: str = "gather"):
+    def __init__(self, sm_agent, judge, sm_session, id: str = "gather"):
         super().__init__(id=id)
-        self._dev = dev_agent
+        self._sm_agent = sm_agent
         self._judge = judge
         # Claude: ONE source of truth — the shared dev session. Soham AND the judge
         # both run on it, so every user turn lands in the session as a side effect,
@@ -86,47 +90,52 @@ class GatherRequirements(Executor):
         # Accepted tradeoff, same as main.py: the judge's verdicts pollute Soham's
         # history and the judge re-reads its own past verdicts. The proposal and the
         # PresentProposal announce later read this same, complete session.
-        self._session = dev_session
+        self._session = sm_session
 
+    # TODO: figure out the input-output deal - what exactly is the expected
+    # data type of ctx? Refer guessing game tutorial or the docs.
+    # TODO: does every executor have a single handler? (and response_handler?)
     @handler
     async def run(self, _trigger: str, ctx: WorkflowContext[ProjectDetails]) -> None:
         # System messages stay developer-controlled (never interpolate user input):
         # https://learn.microsoft.com/en-us/agent-framework/agents/safety#keep-system-messages-developer-controlled
-        greeting = await self._dev.run(
+        greeting = await self._sm_agent.run(
             Message(
                 role="system",
                 contents=["Greet the user, and ask him his requirements."],
             ),
             session=self._session,
         )
+        # TODO: why can't user prompt be a pydantic model? Noticed in guessing
+        # game sample too - user inputs are dataclasses while LLM structured
+        # outputs are pydantic models.
         await ctx.request_info(UserPrompt(greeting.text, "requirements"), str)
 
     @response_handler
     async def on_human_turn(
         self, request: UserPrompt, response: str, ctx: WorkflowContext[ProjectDetails]
     ) -> None:
-        if request.kind == "confirm":
-            if response.strip().lower() == "y":
-                # Proposal generated from the shared session, which by now holds the
-                # full conversation — the judge below runs on the session too, so
-                # every user turn (including the one that flips `ready`) is already
-                # in it. Same prompt as main.py.
-                details = await self._dev.run(
-                    Message(
-                        role="system",
-                        contents=[
-                            "Generate a project name and a proposal based on your "
-                            "discussion. The project name should be in snake_case. "
-                            "The proposal contents should be in markdown format."
-                        ],
-                    ),
-                    session=self._session,
-                    options={"response_format": ProjectDetails},
-                )
-                await ctx.send_message(details.value)  # -> write_proposal
-                return
-            # Improvement over main.py (which discarded a non-"y" answer — its TODO
-            # asked for exactly this): treat it as more requirements input below.
+        if request.kind == "confirm" and response.strip().lower() == "y":
+            # Proposal generated from the shared session, which by now holds the
+            # full conversation — the judge below runs on the session too, so
+            # every user turn (including the one that flips `ready`) is already
+            # in it. Same prompt as main.py.
+            details = await self._sm_agent.run(
+                Message(
+                    role="system",
+                    contents=[
+                        "Generate a project name and a proposal based on your "
+                        "discussion. The project name should be in snake_case. "
+                        "The proposal contents should be in markdown format."
+                    ],
+                ),
+                session=self._session,
+                options={"response_format": ProjectDetails},
+            )
+            await ctx.send_message(details.value)  # -> write_proposal
+            return
+        # Improvement over main.py (which discarded a non-"y" answer — its TODO
+        # asked for exactly this): treat it as more requirements input below.
 
         # Requirements turn (or a "no, here's more" confirm answer): run the judge
         # ON THE SESSION so `response` is injected into the shared history (this is
@@ -156,7 +165,7 @@ class GatherRequirements(Executor):
             )
             return
 
-        reply = await self._dev.run(response, session=self._session)
+        reply = await self._sm_agent.run(response, session=self._session)
         await ctx.request_info(UserPrompt(reply.text, "requirements"), str)
 
 
@@ -199,6 +208,8 @@ async def write_proposal(
     )
 
 
+# TODO: This function and to_fix function are executors but read like bools/conditions.
+# Figure out what they do and change func name accordingly.
 @executor(id="to_review")
 async def to_review(
     _coded: AgentExecutorResponse, ctx: WorkflowContext[AgentExecutorRequest]
@@ -266,10 +277,10 @@ class PresentProposal(Executor):
     Reuses the dev session so the summary has full conversational context.
     """
 
-    def __init__(self, dev_agent, dev_session, id: str = "present"):
+    def __init__(self, sm_agent, sm_session, id: str = "present"):
         super().__init__(id=id)
-        self._dev = dev_agent
-        self._session = dev_session
+        self._sm_agent = sm_agent
+        self._session = sm_session
 
     @handler
     async def run(
@@ -278,7 +289,7 @@ class PresentProposal(Executor):
         ctx: WorkflowContext[AgentExecutorRequest, str],
     ) -> None:
         proposal_file_path = ctx.get_state("proposal_file_path")
-        summary = await self._dev.run(
+        summary = await self._sm_agent.run(
             Message(
                 role="system",
                 contents=[
@@ -308,9 +319,9 @@ def build_workflow():
     # ONE dev session, shared by the gatherer and the presenter so Soham keeps full
     # conversational memory end to end. XL and Amma get their own isolated sessions
     # (created internally by AgentExecutor).
-    dev_session = sm_agent.create_session()
-    gather = GatherRequirements(sm_agent, judge_agent, dev_session)
-    present = PresentProposal(sm_agent, dev_session)
+    sm_session = sm_agent.create_session()
+    gather_requirements = GatherRequirements(sm_agent, judge_agent, sm_session)
+    present_proposal = PresentProposal(sm_agent, sm_session)
     xl = AgentExecutor(xl_agent, id="xl")
     amma = AgentExecutor(amma_agent, id="amma")
 
@@ -318,11 +329,11 @@ def build_workflow():
     # bounds the WHOLE run (every superstep, conversation included), not just the
     # review loop. Default is 100; a very long Q&A could approach it.
     return (
-        WorkflowBuilder(start_executor=gather, max_iterations=100)
-        .add_edge(gather, write_proposal)
+        WorkflowBuilder(start_executor=gather_requirements, max_iterations=100)
+        .add_edge(gather_requirements, write_proposal)
         # Soham announces the proposal (product-shortly message) BEFORE XL codes.
-        .add_edge(write_proposal, present)
-        .add_edge(present, xl)
+        .add_edge(write_proposal, present_proposal)
+        .add_edge(present_proposal, xl)
         .add_edge(xl, to_review)
         .add_edge(to_review, amma)
         # Switch-case = exactly-one routing (vs. add_edge conditions, where every
@@ -404,6 +415,8 @@ async def main():
         # Surface this segment's agent outputs (labeled by source) before pausing
         # for the next human turn, so the transcript reads in chronological order.
         _print_segment_outputs(result)
+        # TODO: figure out what this means. Refer agents_with_approval_requests.py
+        # Is is related to requests for tool approvals?
         requests = result.get_request_info_events()
         if not requests:
             break
@@ -413,3 +426,8 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+
+# TODO: Bugs:
+# XL itself wrote a proposal
+# TODO: next up - checkpointing

@@ -24,7 +24,7 @@ def write_to_file(
         return f"Failed to write file: {exc}"
 
 
-@tool(approval_mode="never_require")
+@tool(approval_mode="always_require")
 def read_from_file(
     file_location: Annotated[
         str, Field(description="The full location of the file to be read")
@@ -43,7 +43,7 @@ def read_from_file(
         return f"Failed to read file: {exc}"
 
 
-@tool(approval_mode="never_require")
+@tool(approval_mode="always_require")
 def get_files_under_dir(
     directory_path: Annotated[
         str, Field(description="The full location of the directory to be read")

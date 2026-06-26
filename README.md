@@ -49,6 +49,14 @@ Both of the above lose information, so a smarter approach is:
     - Inject summary **as a message** - send it as the first message to the new thread
     - This is also a multi-agent pattern
 
+## Workflows
+
+Sources:
+- https://learn.microsoft.com/en-us/agent-framework/workflows
+- https://github.com/microsoft/agent-framework/tree/main/python/samples/03-workflows
+
+Some of the advantages of using workflows are mentioned in: https://learn.microsoft.com/en-us/agent-framework/workflows/#key-features
+
 # KodeKloud lab adjustments
 
 > **Scope — proxy is lab-only.** Everything in this section is specific to the KodeKloud tutorial labs, which run against a **proxy gateway** (`OPENAI_API_BASE`). My own `project/` does **not** use that proxy — it runs against a **real Azure OpenAI resource** (`OpenAIChatCompletionClient` with `azure_endpoint` + the `AZURE_OPENAI_*` vars). So the proxy-only quirks below (e.g. the `/responses` → `404` issue) don't apply to `project/`.
