@@ -31,7 +31,6 @@ Two wins this gives us over main.py for free:
 """
 
 import asyncio
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
 
@@ -45,6 +44,7 @@ from agent_framework import (
     Message,
     WorkflowBuilder,
     WorkflowContext,
+    # WorkflowViz,
     executor,
     handler,
     response_handler,
@@ -52,16 +52,17 @@ from agent_framework import (
 from agents import amma_agent, judge_agent, sm_agent, xl_agent
 from constants import OUTPUTS_DIR
 from models import ProjectDetails
+from pydantic import BaseModel
 from tools import write_to_file
 
 
 # The payload we hand the driver whenever we need a human turn. `kind` lets the
 # ONE response_handler below tell a requirements answer apart from a yes/no
 # confirmation; `text` is what the driver prints before reading input.
-@dataclass
-class UserPrompt:
+# SOHAM: This can be either dataclass or pydantic model.
+class UserPrompt(BaseModel):
     text: str
-    kind: Literal["requirements", "confirm"]  # "requirements" | "confirm"
+    kind: Literal["requirements", "confirm"]
 
 
 # ---------------------------------------------------------------------------
@@ -94,7 +95,11 @@ class GatherRequirements(Executor):
 
     # TODO: figure out the input-output deal - what exactly is the expected
     # data type of ctx? Refer guessing game tutorial or the docs.
+    # TODO: 1. expected data type of ctx and how it is different from the function's own args
+    # TODO: 2. difference between send_message and yield_output
     # TODO: does every executor have a single handler? (and response_handler?)
+    # Answer: NO (https://learn.microsoft.com/en-us/agent-framework/workflows/executors?pivots=programming-language-python)
+    # Is it for multiple input data types? Same with response handler?
     @handler
     async def run(self, _trigger: str, ctx: WorkflowContext[ProjectDetails]) -> None:
         # System messages stay developer-controlled (never interpolate user input):
@@ -106,10 +111,10 @@ class GatherRequirements(Executor):
             ),
             session=self._session,
         )
-        # TODO: why can't user prompt be a pydantic model? Noticed in guessing
-        # game sample too - user inputs are dataclasses while LLM structured
-        # outputs are pydantic models.
-        await ctx.request_info(UserPrompt(greeting.text, "requirements"), str)
+        # SOHAM: ctx.request_info is used when asking input from the user.
+        # The executor must have a @response_handler method to handle user inputs.
+        # Source: https://learn.microsoft.com/en-us/agent-framework/workflows/human-in-the-loop?pivots=programming-language-python
+        await ctx.request_info(UserPrompt(text=greeting.text, kind="requirements"), str)
 
     @response_handler
     async def on_human_turn(
@@ -157,16 +162,16 @@ class GatherRequirements(Executor):
         if ready:
             await ctx.request_info(
                 UserPrompt(
-                    "Looks like we have everything we need. Should we proceed "
+                    text="Looks like we have everything we need. Should we proceed "
                     "with the final proposal? (y/n)",
-                    "confirm",
+                    kind="confirm",
                 ),
                 str,
             )
             return
 
         reply = await self._sm_agent.run(response, session=self._session)
-        await ctx.request_info(UserPrompt(reply.text, "requirements"), str)
+        await ctx.request_info(UserPrompt(text=reply.text, kind="requirements"), str)
 
 
 # ---------------------------------------------------------------------------
@@ -188,7 +193,12 @@ async def write_proposal(
     ctx.set_state("project_path", str(project_path))
     ctx.set_state("proposal_file_path", str(proposal_file_path))
 
+    # SOHAM: ctx.send_message is used to send messages to the next
+    # agent/executor in the graph.
     await ctx.send_message(
+        # SOHAM: AgentExecutorRequest is nothing but a series of messages/conversation
+        # that is to be passed to the next agent in the workflow.
+        # Source: https://github.com/microsoft/agent-framework/blob/main/python/samples/03-workflows/agents/azure_chat_agents_and_executor.py
         AgentExecutorRequest(
             messages=[
                 Message(
@@ -208,14 +218,12 @@ async def write_proposal(
     )
 
 
-# TODO: This function and to_fix function are executors but read like bools/conditions.
-# Figure out what they do and change func name accordingly.
-@executor(id="to_review")
-async def to_review(
+@executor(id="ask_agent_to_review")
+async def ask_agent_to_review(
     _coded: AgentExecutorResponse, ctx: WorkflowContext[AgentExecutorRequest]
 ) -> None:
-    # XL's reply is irrelevant to Amma — Amma reviews the directory on disk. So we
-    # discard the coding response and emit a fresh review request.
+    # XL's reply is irrelevant to Amma — Amma reviews the directory on disk.
+    # So we discard the coding response and emit a fresh review request.
     out_dir = Path(ctx.get_state("project_path")) / "out"
     await ctx.send_message(
         AgentExecutorRequest(
@@ -230,8 +238,8 @@ async def to_review(
     )
 
 
-@executor(id="to_fix")
-async def to_fix(
+@executor(id="ask_agent_to_fix")
+async def ask_agent_to_fix(
     review: AgentExecutorResponse, ctx: WorkflowContext[AgentExecutorRequest]
 ) -> None:
     comments = review.agent_response.value.comments
@@ -302,7 +310,10 @@ class PresentProposal(Executor):
             ),
             session=self._session,
         )
-        await ctx.yield_output(summary.text)  # emitted with executor_id="present"
+        # SOHAM: ctx.yield_output yields the final outputs of the workflow
+        # which user sees.
+        # emitted with executor_id="present" in this executor's init method
+        await ctx.yield_output(summary.text)
         await ctx.send_message(xl_request)  # -> xl starts coding
 
 
@@ -334,15 +345,18 @@ def build_workflow():
         # Soham announces the proposal (product-shortly message) BEFORE XL codes.
         .add_edge(write_proposal, present_proposal)
         .add_edge(present_proposal, xl)
-        .add_edge(xl, to_review)
-        .add_edge(to_review, amma)
+        .add_edge(xl, ask_agent_to_review)
+        .add_edge(ask_agent_to_review, amma)
         # Switch-case = exactly-one routing (vs. add_edge conditions, where every
         # matching edge fires). Done -> done sink; otherwise -> fix, then loop to XL.
         .add_switch_case_edge_group(
             amma,
-            [Case(condition=review_passed, target=done), Default(target=to_fix)],
+            [
+                Case(condition=review_passed, target=done),
+                Default(target=ask_agent_to_fix),
+            ],
         )
-        .add_edge(to_fix, xl)
+        .add_edge(ask_agent_to_fix, xl)
         .build()
     )
 
@@ -406,17 +420,26 @@ async def answer_pending_requests(requests) -> dict:
 async def main():
     workflow = build_workflow()
 
+    # To save workflow visualization in a pdf
+    # viz = WorkflowViz(workflow)
+    # print(viz.save_pdf("workflow.pdf"))
+
     # NOTE — this driver loop is the imperative shell the workflow can't absorb:
     # run -> collect pending human/approval requests -> answer -> resume. The
     # `responses=` kwarg is how you feed answers back in (_workflow.py:519). The run
     # is done when a resume returns with no more pending requests.
+    # SOHAM: workflow.run always needs an input to run. So we give this message: start.
+    # If we try workflow.run() without any input:
+    # ValueError: Must provide at least one of: 'message' (new run),
+    # 'responses' (send responses), or 'checkpoint_id' (resume from checkpoint).
     result = await workflow.run("start")
     while True:
         # Surface this segment's agent outputs (labeled by source) before pausing
         # for the next human turn, so the transcript reads in chronological order.
         _print_segment_outputs(result)
-        # TODO: figure out what this means. Refer agents_with_approval_requests.py
-        # Is is related to requests for tool approvals?
+        # SOHAM: the following is basically the workflow equivalent of
+        # result.user_input_requests which we get while calling standalone agents
+        # (or chunk.user_input_requests in case of streaming).
         requests = result.get_request_info_events()
         if not requests:
             break
@@ -428,6 +451,5 @@ if __name__ == "__main__":
     asyncio.run(main())
 
 
-# TODO: Bugs:
-# XL itself wrote a proposal
 # TODO: next up - checkpointing
+# TODO: try with streaming - ask claude only to do it

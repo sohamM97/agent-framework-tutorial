@@ -57,7 +57,7 @@ def get_condition(expected_result: bool):
         try:
             # Prefer parsing a structured DetectionResult from the agent JSON text.
             # Using model_validate_json ensures type safety and raises if the shape is wrong.
-            # Soham: In the original example, it was "message.agent_run_response.text", which is wrong
+            # SOHAM: In the original example, it was "message.agent_run_response.text", which is wrong
             detection = DetectionResult.model_validate_json(message.agent_response.text)
             # Route only when the spam flag matches the expected path.
             return detection.is_spam == expected_result

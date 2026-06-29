@@ -41,7 +41,8 @@ async def main():
     # TODO: what is the difference between agent and agent executor?
     # TODO: according to claude in project/workflow_graph.py, executors
     # internally create sessions for agents. In this example, if we wanted to
-    # have sessions, what would be the solution?
+    # have sessions, what would be the solution? In fact, do we even have
+    # sessions in this example?
     writer_agent = Agent(
         client=client,
         instructions=(

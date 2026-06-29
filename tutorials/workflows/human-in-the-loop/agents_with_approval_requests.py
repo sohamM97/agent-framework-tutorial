@@ -232,7 +232,9 @@ async def main() -> None:
             credential=AzureCliCredential(),
         ),
         name="EmailWriter",
-        instructions=("You are an excellent email assistant. You respond to incoming emails."),
+        instructions=(
+            "You are an excellent email assistant. You respond to incoming emails."
+        ),
         # tools with `approval_mode="always_require"` will trigger approval requests
         tools=[
             read_historical_email_data,
@@ -248,7 +250,9 @@ async def main() -> None:
 
     # Build the workflow
     workflow = (
-        WorkflowBuilder(start_executor=email_processor, output_from=[conclude_workflow])
+        WorkflowBuilder(
+            start_executor=email_processor, output_executors=[conclude_workflow]
+        )
         .add_edge(email_processor, email_writer_agent)
         .add_edge(email_writer_agent, conclude_workflow)
         .build()
@@ -272,22 +276,31 @@ async def main() -> None:
         for request_info_event in request_info_events:
             # We should only expect FunctionApprovalRequestContent in this sample
             data = request_info_event.data
-            if not isinstance(data, Content) or data.type != "function_approval_request":
+            if (
+                not isinstance(data, Content)
+                or data.type != "function_approval_request"
+            ):
                 raise ValueError(f"Unexpected request info content type: {type(data)}")
 
             # To make the type checker happy, we make sure function_call is not None
             if data.function_call is None:
-                raise ValueError("Function call information is missing in the approval request.")
+                raise ValueError(
+                    "Function call information is missing in the approval request."
+                )
 
             # Pretty print the function call details
             arguments = json.dumps(data.function_call.parse_arguments(), indent=2)
-            print(f"Received approval request for function: {data.function_call.name} with args:\n{arguments}")
+            print(
+                f"Received approval request for function: {data.function_call.name} with args:\n{arguments}"
+            )
 
             # For demo purposes, we automatically approve the request
             # The expected response type of the request is `function_approval_response Content`,
             # which can be created via `to_function_approval_response` method on the request content
             print("Performing automatic approval for demo purposes...")
-            responses[request_info_event.request_id] = data.to_function_approval_response(approved=True)
+            responses[request_info_event.request_id] = (
+                data.to_function_approval_response(approved=True)
+            )
 
         events = await workflow.run(responses=responses)
         request_info_events = events.get_request_info_events()

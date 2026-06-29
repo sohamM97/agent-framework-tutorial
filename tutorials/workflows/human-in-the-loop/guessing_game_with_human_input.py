@@ -4,6 +4,7 @@ import asyncio
 import os
 from collections.abc import AsyncIterable
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from agent_framework import (
@@ -26,7 +27,7 @@ from dotenv import load_dotenv
 from pydantic import BaseModel
 
 # Load environment variables from .env file
-load_dotenv()
+load_dotenv(Path(__file__).parent / ".env")
 
 """
 Sample: Human in the loop guessing game
@@ -60,7 +61,6 @@ Prerequisites:
 # - The executor can then continue the workflow, e.g., by sending a new message to the agent.
 
 
-# TODO: can we use pydantic models instead
 @dataclass
 class HumanFeedbackRequest:
     """Request sent to the human for feedback on the agent's guess."""
@@ -181,6 +181,9 @@ async def process_event_stream(
                 if response_id != last_response_id:
                     if last_response_id is not None:
                         print()  # Newline between different responses
+                    # TODO: the issue is that this line is called at the end.
+                    # In this case, last_response_id is None but response_id is
+                    # some value. And the text is just ''.
                     print(f"{update.author_name}: {update.text}", end="", flush=True)
                     last_response_id = response_id
                 else:
