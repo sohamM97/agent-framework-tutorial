@@ -56,6 +56,8 @@ from models import ProjectDetails
 from pydantic import BaseModel
 from tools import write_to_file
 
+# TODO: look into WorkflowEvent
+
 
 # The payload we hand the driver whenever we need a human turn. It carries only
 # `kind` so the ONE response_handler below can tell a requirements answer apart
@@ -149,7 +151,11 @@ class GatherRequirements(Executor):
         # SOHAM: ctx.request_info is used when asking input from the user.
         # The executor must have a @response_handler method to handle user inputs.
         # Source: https://learn.microsoft.com/en-us/agent-framework/workflows/human-in-the-loop?pivots=programming-language-python
-        await ctx.request_info(UserPrompt(kind="requirements"), str)
+        # TODO: can we take multiple inputs from user? start with 2
+        # TODO: need some more clarity on request_data
+        await ctx.request_info(
+            request_data=UserPrompt(kind="requirements"), response_type=str
+        )
 
     # TODO: get clarity on args and ctx
     @response_handler
@@ -489,7 +495,7 @@ async def answer_pending_requests(requests) -> dict:
 async def main():
     workflow = build_workflow()
 
-    # To save workflow visualization in a pdf
+    # # To save workflow visualization in a pdf
     # viz = WorkflowViz(workflow)
     # print(viz.save_pdf("workflow.pdf"))
 
@@ -523,3 +529,8 @@ if __name__ == "__main__":
 
 
 # TODO: next up - checkpointing
+# 1. store checkpoints somewhere (preferably db but what are the other
+# providers?) and inspect them. Check out BS's repo.
+# 2. try somehow interrupting and resuming from a checkpoint
+# TODO: further research: orchestrators, workflows as elements in a graph
+# (workflowexecutor as per claude)
