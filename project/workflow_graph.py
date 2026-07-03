@@ -32,7 +32,7 @@ Two wins this gives us over main.py for free:
 
 import asyncio
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Never
 
 from agent_framework import (
     AgentExecutor,
@@ -69,6 +69,11 @@ from tools import write_to_file
 # SOHAM: This can be either dataclass or pydantic model.
 class UserPrompt(BaseModel):
     kind: Literal["requirements", "confirm"]
+
+
+class ProjectRequirements(BaseModel):
+    project_idea: str
+    additional_remarks: str = ""
 
 
 async def _stream_soham(agent, message, session, ctx) -> None:
@@ -126,14 +131,21 @@ class GatherRequirements(Executor):
     # this case, the executor sends message of type ProjectDetails to the next
     # executor in the graph, and yields AgentResponseUpdate or str as workflow
     # output. Every (class-based) executor has ONE HANDLER PER INPUT TYPE,
+    # and one response handler per (request type - response type).
     # Source:
     # https://learn.microsoft.com/en-us/agent-framework/workflows/executors?pivots=programming-language-python
-    # TODO: why is ctx send_message type ProjectDetails here?
     @handler
     async def run(
         self,
         _trigger: str,
-        ctx: WorkflowContext[ProjectDetails, AgentResponseUpdate | str],
+        # Claude: could be ProjectDetails instead of Never. An executor can have many
+        # handlers (here run + on_human_turn); MAF takes each handler's declared
+        # send-type and UNIONs them into one set for the whole executor, and that set
+        # is what type-checks its outgoing edges. So on_human_turn declaring
+        # ProjectDetails already puts it in the set (making the edge to write_proposal
+        # valid) whether or not run also names it. But Never is more accurate: run
+        # never calls send_message (only request_info + yields), so it sends nothing.
+        ctx: WorkflowContext[Never, AgentResponseUpdate | str],
     ) -> None:
         # System messages stay developer-controlled (never interpolate user input):
         # https://learn.microsoft.com/en-us/agent-framework/agents/safety#keep-system-messages-developer-controlled
@@ -151,20 +163,34 @@ class GatherRequirements(Executor):
         # SOHAM: ctx.request_info is used when asking input from the user.
         # The executor must have a @response_handler method to handle user inputs.
         # Source: https://learn.microsoft.com/en-us/agent-framework/workflows/human-in-the-loop?pivots=programming-language-python
-        # TODO: can we take multiple inputs from user? start with 2
         # TODO: need some more clarity on request_data
         await ctx.request_info(
-            request_data=UserPrompt(kind="requirements"), response_type=str
+            request_data=UserPrompt(kind="requirements"),
+            response_type=ProjectRequirements,
         )
 
-    # TODO: get clarity on args and ctx
     @response_handler
     async def on_human_turn(
         self,
+        # The "run" handler calls request info with request_data: UserPrompt
+        # and response_type: ProjectRequirements. And this method
+        # "on_human_turn" calls request info with request_data: UserPrompt and
+        # response_type: str. This response_handler handles both of these
+        # types of request info. Basically, there should be one response
+        # handler to handle each type of request info. The good thing is that
+        # MAF throws a warning if this is not implemented
         request: UserPrompt,
-        response: str,
+        response: str | ProjectRequirements,
         ctx: WorkflowContext[ProjectDetails, AgentResponseUpdate | str],
     ) -> None:
+
+        if isinstance(response, ProjectRequirements):
+            user_response = f"Project idea: {response.project_idea}"
+            if response.additional_remarks:
+                user_response += f" Additional remarks: {response.additional_remarks}"
+        else:
+            user_response = response
+
         if request.kind == "confirm" and response.strip().lower() == "y":
             # Proposal generated from the shared session, which by now holds the
             # full conversation — the judge below runs on the session too, so
@@ -201,7 +227,7 @@ class GatherRequirements(Executor):
         # line 1 was literally the greeting). Running the judge ON the session fixes it.
         #     self._transcript.append(Message(role="user", contents=[response]))
         #     verdict = await self._judge.run(self._transcript)  # stateless: no session=
-        verdict = await self._judge.run(response, session=self._session)
+        verdict = await self._judge.run(user_response, session=self._session)
         ready = bool(verdict.value and verdict.value.ready)
 
         if ready:
@@ -216,7 +242,7 @@ class GatherRequirements(Executor):
             return
 
         # Claude: stream Soham's follow-up question live, then pause for more input.
-        await _stream_soham(self._sm_agent, response, self._session, ctx)
+        await _stream_soham(self._sm_agent, user_response, self._session, ctx)
         await ctx.request_info(UserPrompt(kind="requirements"), str)
 
 
@@ -451,7 +477,29 @@ async def _stream_segment(stream):
     return await stream.get_final_response()
 
 
-async def take_input_from_user() -> str:
+async def take_input_from_user(response_type: type = str) -> str | BaseModel:
+    """Read the user's answer, shaped to the expected `response_type`.
+
+    Claude: a plain-str request (confirm y/n, XL's approvals) stays one input() line.
+    For a Pydantic model (ProjectRequirements) we ask one line per field and build it,
+    so it's generic -- add/rename a field and the prompts follow. is_required() is True
+    only when a field has no default, so an optional field left blank uses its default.
+    """
+    if isinstance(response_type, type) and issubclass(response_type, BaseModel):
+        values = {}
+        for field_name, field in response_type.model_fields.items():
+            required = field.is_required()
+            suffix = ": " if required else " (optional, Enter to skip): "
+            answer = await asyncio.to_thread(input, f"\n[USER] {field_name}{suffix}")
+            # Claude: a required field can't be left blank -- keep asking until the
+            # user types something. strip() so spaces alone don't count as filled.
+            while required and not answer.strip():
+                answer = await asyncio.to_thread(
+                    input, f"[USER] {field_name} is required{suffix}"
+                )
+            if answer or required:
+                values[field_name] = answer
+        return response_type(**values)
     return await asyncio.to_thread(input, "\n[USER]: ")
 
 
@@ -477,7 +525,12 @@ async def answer_pending_requests(requests) -> dict:
         if isinstance(data, UserPrompt):
             # Claude: nothing to print here anymore — Soham's question already
             # streamed out as workflow output. We just collect the user's answer.
-            responses[event.request_id] = await take_input_from_user()
+            # Claude: event.response_type is the type passed to ctx.request_info
+            # (ProjectRequirements for a requirements turn, str for a confirm) — it
+            # rides on the request-info event, so we read it straight off `event`.
+            responses[event.request_id] = await take_input_from_user(
+                event.response_type
+            )
         elif hasattr(data, "to_function_approval_response"):
             print(f"\n{event.source_executor_id} needs approval:")
             print(f" Function: {data.function_call.name}")
