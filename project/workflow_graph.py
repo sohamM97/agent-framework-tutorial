@@ -31,6 +31,7 @@ Two wins this gives us over main.py for free:
 """
 
 import asyncio
+import sys
 from pathlib import Path
 from typing import Literal, Never
 
@@ -42,6 +43,7 @@ from agent_framework import (
     Case,
     Default,
     Executor,
+    InMemoryCheckpointStorage,
     Message,
     WorkflowBuilder,
     WorkflowContext,
@@ -50,9 +52,11 @@ from agent_framework import (
     handler,
     response_handler,
 )
+from agent_framework.exceptions import ChatClientException
 from agents import amma_agent, judge_agent, sm_agent, xl_agent
 from constants import OUTPUTS_DIR
 from models import ProjectDetails
+from openai import APIConnectionError
 from pydantic import BaseModel
 from tools import write_to_file
 
@@ -398,7 +402,13 @@ async def done(_review: AgentExecutorResponse) -> None:
     pass
 
 
-def build_workflow():
+# Claude: a stable name so checkpoints can be listed back by workflow_name. Without
+# a name, WorkflowBuilder auto-generates one per build, which we'd then have to read
+# off the built workflow — a fixed literal keeps list/get_latest calls simple.
+WORKFLOW_NAME = "aistudio_dev_workflow"
+
+
+def build_workflow(checkpoint_storage=None):
     # ONE dev session, shared by the gatherer and the presenter so Soham keeps full
     # conversational memory end to end. XL and Amma get their own isolated sessions
     # (created internally by AgentExecutor).
@@ -412,7 +422,15 @@ def build_workflow():
     # bounds the WHOLE run (every superstep, conversation included), not just the
     # review loop. Default is 100; a very long Q&A could approach it.
     return (
-        WorkflowBuilder(start_executor=gather_requirements, max_iterations=100)
+        # Claude: passing checkpoint_storage is what turns checkpointing ON — with it
+        # None, every create_checkpoint call is a no-op (_runner.py:214). name lets us
+        # list the saved checkpoints back out afterwards.
+        WorkflowBuilder(
+            start_executor=gather_requirements,
+            max_iterations=100,
+            name=WORKFLOW_NAME,
+            checkpoint_storage=checkpoint_storage,
+        )
         .add_edge(gather_requirements, write_proposal)
         # Soham announces the proposal (product-shortly message) BEFORE XL codes.
         .add_edge(write_proposal, present_proposal)
@@ -439,8 +457,73 @@ def build_workflow():
 # mislabel Amma's review as "Soham".
 EXECUTOR_LABELS = {"gather": "Soham", "present": "Soham", "xl": "XL", "amma": "Amma"}
 
+# Claude: ANSI escape codes — special character sequences the terminal reads as
+# "switch style" instead of printing. \033[2m turns on dim (a fainter shade of the
+# normal text color), \033[0m switches back to normal. Codes stack with semicolons,
+# so \033[2;36m is dim + cyan. Both diagnostic styles stay dim so the agent
+# conversation dominates at full brightness; only the hue tells them apart. If your
+# terminal doesn't render dim, gray ("\033[90m") is a good substitute.
+# Claude: only colorize when stdout is a real terminal — piping the run to a file
+# (e.g. `> run.log`) would otherwise litter it with escape codes.
+_IS_TTY = sys.stdout.isatty()
+EVENT_STYLE = "\033[2m" if _IS_TTY else ""  # dim, no hue
+CHECKPOINT_STYLE = "\033[2;36m" if _IS_TTY else ""  # dim cyan
+RESET = "\033[0m" if _IS_TTY else ""
 
-async def _stream_segment(stream):
+
+def _format_checkpoint(checkpoint) -> str:
+    """One-line-ish summary of a WorkflowCheckpoint for live inspection.
+
+    Claude: the full checkpoint holds the whole conversation (checkpoint.messages) and
+    all committed shared state (checkpoint.state) — too big to dump every step. We show
+    the identity/chain fields plus which executors have in-flight messages and which
+    state keys are set. Swap in `checkpoint.to_dict()` if you want to see everything.
+    """
+    executors_with_msgs = list(checkpoint.messages.keys())
+    state_keys = list(checkpoint.state.keys())
+    return (
+        f"  checkpoint_id : {checkpoint.checkpoint_id}\n"
+        f"  previous      : {checkpoint.previous_checkpoint_id}\n"
+        f"  iteration     : {checkpoint.iteration_count}\n"
+        f"  msgs pending  : {executors_with_msgs}\n"
+        f"  state keys    : {state_keys}\n"
+        f"  pending reqs  : {list(checkpoint.pending_request_info_events.keys())}"
+    )
+
+
+def _format_event(event) -> str:
+    """Compact one-liner describing a workflow event, for learning/inspection.
+
+    Claude: WorkflowEvent packs every possible field onto one class (_events.py:194)
+    and only sets the ones that apply to this event's type. So we pull each field and
+    include it only when present — that's how one formatter covers all the event kinds
+    (started, status, superstep_started/completed, executor_invoked/completed,
+    request_info, warning/error). The data payload is kept to a short preview because
+    executor_completed carries the executor's sent messages + outputs
+    (_executor.py:288-292), which can be large.
+    """
+    parts = [f"type={event.type}"]
+    if event.executor_id is not None:
+        parts.append(f"executor={event.executor_id}")
+    if event.iteration is not None:
+        parts.append(f"superstep={event.iteration}")
+    if event.state is not None:
+        # Claude: .state is a WorkflowRunState enum (STARTED, IN_PROGRESS, IDLE,
+        # IDLE_WITH_PENDING_REQUESTS, ...); .value is its readable string.
+        parts.append(f"state={event.state.value}")
+    if event.type == "request_info":
+        # These are properties that raise off a non-request_info event, so read them
+        # only here (guarded by type). They tell us who is waiting on the human.
+        parts.append(f"request_id={event.request_id} from={event.source_executor_id}")
+    if event.data is not None:
+        preview = str(event.data).replace("\n", " ")
+        if len(preview) > 80:
+            preview = preview[:80] + "…"
+        parts.append(f"data={preview}")
+    return "[EVENT] " + "  ".join(parts)
+
+
+async def _stream_segment(stream, checkpoint_storage=None):
     """Render one streaming run's output live, then return its WorkflowRunResult.
 
     Claude: with stream=True, each AgentExecutor (XL, Amma) — and Soham too, whose
@@ -459,6 +542,28 @@ async def _stream_segment(stream):
     """
     last_source = None
     async for event in stream:
+        # TODO: what is a superstep? is it similar to a "turn"?
+        # Claude: log every event except the per-token output/intermediate stream
+        # (rendered as live text below; a line per token would shred the typing).
+        # Close any half-printed live line first so the diagnostic starts clean.
+        if event.type not in ("output", "intermediate"):
+            if last_source is not None:
+                print()
+                last_source = None
+            print()
+            print(f"{EVENT_STYLE}{_format_event(event)}{RESET}")
+
+        # Claude: a checkpoint is saved just before each superstep_completed event
+        # (_runner.py:143-146). The id isn't on the event, so we read the newest one
+        # back out of storage here.
+        if event.type == "superstep_completed" and checkpoint_storage is not None:
+            latest = await checkpoint_storage.get_latest(workflow_name=WORKFLOW_NAME)
+            print()
+            # Claude: the style stays on across newlines, so one wrap covers the
+            # whole multi-line checkpoint block.
+            print(f"{CHECKPOINT_STYLE}[CHECKPOINT @ superstep {event.iteration}]")
+            print((_format_checkpoint(latest) if latest else "  (none)") + RESET)
+            continue
         if event.type != "output":
             continue
         # AgentResponseUpdate has .text (the chunk); a plain-string yield does not.
@@ -545,8 +650,57 @@ async def answer_pending_requests(requests) -> dict:
     return responses
 
 
+async def _run_with_resume(
+    workflow, checkpoint_storage, *, max_attempts: int = 3, **run_kwargs
+):
+    """Run (or resume) the workflow, recovering a transient chat-client failure by
+    resuming from the last saved checkpoint instead of restarting the whole run.
+
+    Claude: the graph runner re-raises an agent's exception (_runner.py:122-130), so a
+    single API timeout aborts the entire run. But a checkpoint is saved after every
+    completed superstep, so on failure we resume from the newest one — the failed
+    superstep re-runs and the conversation so far is NOT re-asked. Bounded by
+    max_attempts so a genuinely-down endpoint doesn't loop forever.
+
+    Caveat: our checkpoints live in InMemoryCheckpointStorage, so this only recovers a
+    failure we catch WITHOUT the process exiting — a full crash loses them. Switch to
+    FileCheckpointStorage (checkpointing TODO item 2) to survive a restart.
+    """
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return await _stream_segment(
+                workflow.run(stream=True, **run_kwargs), checkpoint_storage
+            )
+        except ChatClientException as exc:
+            # Claude: only RESUME transient network failures (connect drops + timeouts).
+            # The wrapper is raised `from ex` (_chat_completion_client.py:538,546), so the
+            # original openai error is on exc.__cause__. APITimeoutError is a subclass of
+            # APIConnectionError, so this one check covers both. A permanent error (bad
+            # request, bad key) would just fail again, so we re-raise it now instead of
+            # burning attempts.
+            if not isinstance(exc.__cause__, APIConnectionError):
+                raise
+            latest = await checkpoint_storage.get_latest(workflow_name=WORKFLOW_NAME)
+            if latest is None or attempt == max_attempts:
+                raise
+            print(
+                f"\n[RESUME] {type(exc).__name__} on attempt {attempt}/{max_attempts}"
+                f"; resuming from checkpoint {latest.checkpoint_id}"
+            )
+            # Claude: after the first failure we RESUME the saved run — drop the
+            # original message/responses and continue from the checkpoint instead.
+            run_kwargs = {
+                "checkpoint_id": latest.checkpoint_id,
+                "checkpoint_storage": checkpoint_storage,
+            }
+
+
 async def main():
-    workflow = build_workflow()
+    # Claude: in-memory store — checkpoints live only for this process run. Item 2 of
+    # the checkpointing TODO (persist to disk/db) would swap this for FileCheckpointStorage
+    # or a custom CheckpointStorage. Passing it into build_workflow is what enables saving.
+    checkpoint_storage = InMemoryCheckpointStorage()
+    workflow = build_workflow(checkpoint_storage)
 
     # # To save workflow visualization in a pdf
     # viz = WorkflowViz(workflow)
@@ -565,7 +719,7 @@ async def main():
     # block. The run -> answer -> resume loop is otherwise identical; _stream_segment
     # renders the events and hands back the WorkflowRunResult so we can still read
     # its pending requests.
-    result = await _stream_segment(workflow.run("start", stream=True))
+    result = await _run_with_resume(workflow, checkpoint_storage, message="start")
     while True:
         # SOHAM: the following is basically the workflow equivalent of
         # result.user_input_requests which we get while calling standalone agents
@@ -574,7 +728,9 @@ async def main():
         if not requests:
             break
         responses = await answer_pending_requests(requests)
-        result = await _stream_segment(workflow.run(responses=responses, stream=True))
+        result = await _run_with_resume(
+            workflow, checkpoint_storage, responses=responses
+        )
 
 
 if __name__ == "__main__":
@@ -582,8 +738,9 @@ if __name__ == "__main__":
 
 
 # TODO: next up - checkpointing
-# 1. store checkpoints somewhere (preferably db but what are the other
+# 1. print checkpoints (done)
+# 2. store checkpoints somewhere (preferably db but what are the other
 # providers?) and inspect them. Check out BS's repo.
-# 2. try somehow interrupting and resuming from a checkpoint
+# 3. try somehow interrupting and resuming from a checkpoint
 # TODO: further research: orchestrators, workflows as elements in a graph
 # (workflowexecutor as per claude)
