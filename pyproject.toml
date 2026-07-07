@@ -19,6 +19,6 @@ dev = [
 
 [tool.ruff.lint]
 # I = isort (import sorting); extends ruff's defaults (F + E4/E7/E9)
-extend-select = ["I"]
+extend-select = ["I", "E501"]
 # Still flag unused imports, but don't auto-delete them on save
 unfixable = ["F401"]

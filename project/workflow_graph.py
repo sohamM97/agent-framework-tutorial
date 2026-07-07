@@ -673,11 +673,11 @@ async def _run_with_resume(
             )
         except ChatClientException as exc:
             # Claude: only RESUME transient network failures (connect drops + timeouts).
-            # The wrapper is raised `from ex` (_chat_completion_client.py:538,546), so the
-            # original openai error is on exc.__cause__. APITimeoutError is a subclass of
-            # APIConnectionError, so this one check covers both. A permanent error (bad
-            # request, bad key) would just fail again, so we re-raise it now instead of
-            # burning attempts.
+            # The wrapper is raised `from ex` (_chat_completion_client.py:538,546), so
+            # the original openai error is on exc.__cause__. APITimeoutError is a
+            # subclass of APIConnectionError, so this one check covers both. A permanent
+            #  error (bad request, bad key) would just fail again, so we re-raise it now
+            # instead of burning attempts.
             if not isinstance(exc.__cause__, APIConnectionError):
                 raise
             latest = await checkpoint_storage.get_latest(workflow_name=WORKFLOW_NAME)
@@ -697,8 +697,9 @@ async def _run_with_resume(
 
 async def main():
     # Claude: in-memory store — checkpoints live only for this process run. Item 2 of
-    # the checkpointing TODO (persist to disk/db) would swap this for FileCheckpointStorage
-    # or a custom CheckpointStorage. Passing it into build_workflow is what enables saving.
+    # the checkpointing TODO (persist to disk/db) would swap this for
+    # FileCheckpointStorage or a custom CheckpointStorage. Passing it into
+    # build_workflow is what enables saving.
     checkpoint_storage = InMemoryCheckpointStorage()
     workflow = build_workflow(checkpoint_storage)
 
@@ -740,7 +741,9 @@ if __name__ == "__main__":
 # TODO: next up - checkpointing
 # 1. print checkpoints (done)
 # 2. store checkpoints somewhere (preferably db but what are the other
-# providers?) and inspect them. Check out BS's repo.
-# 3. try somehow interrupting and resuming from a checkpoint
+# providers?) and inspect them.
+# 3. Check out BS's repo. it doesn't have an outright checkpoint provider. So how is it
+# handled there?
+# 4. try somehow interrupting and resuming from a checkpoint
 # TODO: further research: orchestrators, workflows as elements in a graph
 # (workflowexecutor as per claude)
