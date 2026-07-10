@@ -37,16 +37,19 @@ from pathlib import Path
 from typing import Literal, Never
 
 from agent_framework import (
+    Agent,
     AgentExecutor,
     AgentExecutorRequest,
     AgentExecutorResponse,
     AgentResponseUpdate,
+    AgentSession,
     Case,
     Default,
     Executor,
     InMemoryCheckpointStorage,
     Message,
     WorkflowBuilder,
+    WorkflowCheckpoint,
     WorkflowContext,
     # WorkflowViz,
     executor,
@@ -87,7 +90,16 @@ class RandomException(Exception):
     pass
 
 
-async def _stream_soham(agent, message, session, ctx) -> None:
+def throw_random_exception():
+    # SOHAM: throw an exception 1/3rd of the time, to test checkpointing
+    rand_int = random.choice([1, 2, 3])
+    if rand_int == 3:
+        raise RandomException
+
+
+async def _stream_soham(
+    agent: Agent, message: str | Message, session: AgentSession, ctx
+) -> None:
     """Run Soham with streaming and surface each chunk as workflow output.
 
     Claude: yielding the updates (instead of running non-streamed and yielding one
@@ -102,6 +114,8 @@ async def _stream_soham(agent, message, session, ctx) -> None:
     yield_output. Streaming flips that: the text goes out via yield_output here, and
     request_info now carries only the routing `kind`.
     """
+    # TODO: explain why it was kept here instead of main
+    throw_random_exception()
     async for update in agent.run(message, session=session, stream=True):
         # SOHAM: ctx.yield_output yields the outputs of the workflow which the user
         # sees. If agents/agentexecutors are present in the workflow, all of their
@@ -305,6 +319,7 @@ async def write_proposal(
 async def ask_agent_to_review(
     _coded: AgentExecutorResponse, ctx: WorkflowContext[AgentExecutorRequest]
 ) -> None:
+    throw_random_exception()
     # XL's reply is irrelevant to Amma — Amma reviews the directory on disk.
     # So we discard the coding response and emit a fresh review request.
     out_dir = Path(ctx.get_state("project_path")) / "out"
@@ -733,26 +748,30 @@ async def main():
     # block. The run -> answer -> resume loop is otherwise identical; _stream_segment
     # renders the events and hands back the WorkflowRunResult so we can still read
     # its pending requests.
-    result = await _stream_segment(
-        workflow.run(message="start", stream=True), checkpoint_storage
-    )
+
+    responses = None
+    checkpoint_to_resume: WorkflowCheckpoint | None = None
+
     while True:
         try:
-            # TODO: Claude Review: this raise fires BEFORE _stream_segment runs, so at
-            # this point the previous run has already finished and already checkpointed
-            # its paused state. Resuming from get_latest just re-surfaces the same
-            # pending question `result` already holds -- so this tests resume, not
-            # failure RECOVERY, and nothing failed to re-run. A real transient failure
-            # happens mid-run (an agent API call), i.e. INSIDE _stream_segment, where
-            # the last checkpoint sits one step behind the failure and resuming
-            # re-runs that step. To exercise that, move the raise to wrap the
-            # _stream_segment(...) calls (inside this try) instead of here.
-            # (Verified: apply_checkpoint re-emits pending requests on resume,
-            # _runner_context.py:423-426.)
-            # SOHAM: throw an exception 1/3rd of the time.
-            rand_int = random.choice([1, 2, 3])
-            if rand_int == 3:
-                raise RandomException
+            if checkpoint_to_resume:
+                # TODO: Explain why here and not in except clause
+                result = await _stream_segment(
+                    workflow.run(
+                        checkpoint_id=checkpoint_to_resume.checkpoint_id, stream=True
+                    ),
+                    checkpoint_storage,
+                )
+                checkpoint_to_resume = None
+            elif responses:
+                result = await _stream_segment(
+                    workflow.run(responses=responses, stream=True), checkpoint_storage
+                )
+                responses = None
+            else:
+                result = await _stream_segment(
+                    workflow.run(message="start", stream=True), checkpoint_storage
+                )
 
             # SOHAM: result.get_request_info_events() is basically the workflow
             # equivalent of result.user_input_requests which we get while calling
@@ -761,26 +780,23 @@ async def main():
             if not requests:
                 break
             responses = await answer_pending_requests(requests)
-            result = await _stream_segment(
-                workflow.run(responses=responses, stream=True), checkpoint_storage
-            )
+
         except RandomException:
-            # TODO: fill this up referring to docs, not to claude commented code
-            # Do we assume that the result will not be available at all?
             print("RANDOM EXCEPTION OCCURRED!")
-            latest_checkpoint = await checkpoint_storage.get_latest(
+            # Claude: a failure invalidates any in-flight responses (their pending
+            # request was already consumed by the failed run). Clear them AND resume
+            # from the last checkpoint, which the branch order above prioritises.
+            checkpoint_to_resume = await checkpoint_storage.get_latest(
                 workflow_name=workflow.name
             )
-            if not latest_checkpoint:
-                raise RuntimeError("No checkpoints found!")
-            print(f"RESTARTING FROM CHECKPOINT: {latest_checkpoint.checkpoint_id}")
+            responses = None
 
-            result = await _stream_segment(
-                workflow.run(
-                    checkpoint_id=latest_checkpoint.checkpoint_id, stream=True
-                ),
-                checkpoint_storage,
-            )
+            if checkpoint_to_resume:
+                print(
+                    f"RESTARTING FROM CHECKPOINT: {checkpoint_to_resume.checkpoint_id}"
+                )
+            else:
+                print("No checkpoint found to resume from, starting again..")
 
 
 if __name__ == "__main__":
@@ -791,7 +807,7 @@ if __name__ == "__main__":
 # 1. print checkpoints (done)
 # 2. try somehow interrupting and resuming from a checkpoint - save the checkpoint,
 # raise an exception manually on random choice and resume workflow using that checkpoint
-# id.
+# id. (done but understand better)
 # Resume vs rehydrate checkpoints? refer doc
 # 3. store checkpoints somewhere (preferably db but what are the other
 # providers?) and inspect them.
