@@ -31,6 +31,7 @@ Two wins this gives us over main.py for free:
 """
 
 import asyncio
+import random
 import sys
 from pathlib import Path
 from typing import Literal, Never
@@ -52,11 +53,13 @@ from agent_framework import (
     handler,
     response_handler,
 )
-from agent_framework.exceptions import ChatClientException
+
+# from agent_framework.exceptions import ChatClientException
 from agents import amma_agent, judge_agent, sm_agent, xl_agent
 from constants import OUTPUTS_DIR
 from models import ProjectDetails
-from openai import APIConnectionError
+
+# from openai import APIConnectionError
 from pydantic import BaseModel
 from tools import write_to_file
 
@@ -78,6 +81,10 @@ class UserPrompt(BaseModel):
 class ProjectRequirements(BaseModel):
     project_idea: str
     additional_remarks: str = ""
+
+
+class RandomException(Exception):
+    pass
 
 
 async def _stream_soham(agent, message, session, ctx) -> None:
@@ -117,7 +124,7 @@ class GatherRequirements(Executor):
     once per answer to continue.
     """
 
-    def __init__(self, sm_agent, judge, sm_session, id: str = "gather"):
+    def __init__(self, sm_agent, judge, sm_session, id: str = "gather_requirements"):
         super().__init__(id=id)
         self._sm_agent = sm_agent
         self._judge = judge
@@ -361,7 +368,7 @@ class PresentProposal(Executor):
     Reuses the dev session so the summary has full conversational context.
     """
 
-    def __init__(self, sm_agent, sm_session, id: str = "present"):
+    def __init__(self, sm_agent, sm_session, id: str = "present_proposal"):
         super().__init__(id=id)
         self._sm_agent = sm_agent
         self._session = sm_session
@@ -455,7 +462,12 @@ def build_workflow(checkpoint_storage=None):
 # attributed correctly. Every AgentExecutor yields its OWN reply as workflow
 # output, so xl and amma each surface here; without this map the driver would
 # mislabel Amma's review as "Soham".
-EXECUTOR_LABELS = {"gather": "Soham", "present": "Soham", "xl": "XL", "amma": "Amma"}
+EXECUTOR_LABELS = {
+    "gather_requirements": "Soham",
+    "present_proposal": "Soham",
+    "xl": "XL",
+    "amma": "Amma",
+}
 
 # Claude: ANSI escape codes — special character sequences the terminal reads as
 # "switch style" instead of printing. \033[2m turns on dim (a fainter shade of the
@@ -650,49 +662,50 @@ async def answer_pending_requests(requests) -> dict:
     return responses
 
 
-async def _run_with_resume(
-    workflow, checkpoint_storage, *, max_attempts: int = 3, **run_kwargs
-):
-    """Run (or resume) the workflow, recovering a transient chat-client failure by
-    resuming from the last saved checkpoint instead of restarting the whole run.
-
-    Claude: the graph runner re-raises an agent's exception (_runner.py:122-130), so a
-    single API timeout aborts the entire run. But a checkpoint is saved after every
-    completed superstep, so on failure we resume from the newest one — the failed
-    superstep re-runs and the conversation so far is NOT re-asked. Bounded by
-    max_attempts so a genuinely-down endpoint doesn't loop forever.
-
-    Caveat: our checkpoints live in InMemoryCheckpointStorage, so this only recovers a
-    failure we catch WITHOUT the process exiting — a full crash loses them. Switch to
-    FileCheckpointStorage (checkpointing TODO item 2) to survive a restart.
-    """
-    for attempt in range(1, max_attempts + 1):
-        try:
-            return await _stream_segment(
-                workflow.run(stream=True, **run_kwargs), checkpoint_storage
-            )
-        except ChatClientException as exc:
-            # Claude: only RESUME transient network failures (connect drops + timeouts).
-            # The wrapper is raised `from ex` (_chat_completion_client.py:538,546), so
-            # the original openai error is on exc.__cause__. APITimeoutError is a
-            # subclass of APIConnectionError, so this one check covers both. A permanent
-            #  error (bad request, bad key) would just fail again, so we re-raise it now
-            # instead of burning attempts.
-            if not isinstance(exc.__cause__, APIConnectionError):
-                raise
-            latest = await checkpoint_storage.get_latest(workflow_name=WORKFLOW_NAME)
-            if latest is None or attempt == max_attempts:
-                raise
-            print(
-                f"\n[RESUME] {type(exc).__name__} on attempt {attempt}/{max_attempts}"
-                f"; resuming from checkpoint {latest.checkpoint_id}"
-            )
-            # Claude: after the first failure we RESUME the saved run — drop the
-            # original message/responses and continue from the checkpoint instead.
-            run_kwargs = {
-                "checkpoint_id": latest.checkpoint_id,
-                "checkpoint_storage": checkpoint_storage,
-            }
+# Claude: commented out — auto resume-from-checkpoint disabled for now.
+# async def _run_with_resume(
+#     workflow, checkpoint_storage, *, max_attempts: int = 3, **run_kwargs
+# ):
+#     """Run (or resume) the workflow, recovering a transient chat-client failure by
+#     resuming from the last saved checkpoint instead of restarting the whole run.
+#
+#     Claude: the graph runner re-raises an agent's exception (_runner.py:122-130), so a
+#     single API timeout aborts the entire run. But a checkpoint is saved after every
+#     completed superstep, so on failure we resume from the newest one — the failed
+#     superstep re-runs and the conversation so far is NOT re-asked. Bounded by
+#     max_attempts so a genuinely-down endpoint doesn't loop forever.
+#
+#     Caveat: our checkpoints live in InMemoryCheckpointStorage, so this only recovers a
+#     failure we catch WITHOUT the process exiting — a full crash loses them. Switch to
+#     FileCheckpointStorage (checkpointing TODO item 2) to survive a restart.
+#     """
+#     for attempt in range(1, max_attempts + 1):
+#         try:
+#             return await _stream_segment(
+#                 workflow.run(stream=True, **run_kwargs), checkpoint_storage
+#             )
+#         except ChatClientException as exc:
+#             # Claude: only RESUME transient network failures (connect drops + timeouts).
+#             # The wrapper is raised `from ex` (_chat_completion_client.py:538,546), so
+#             # the original openai error is on exc.__cause__. APITimeoutError is a
+#             # subclass of APIConnectionError, so this one check covers both. A permanent
+#             #  error (bad request, bad key) would just fail again, so we re-raise it now
+#             # instead of burning attempts.
+#             if not isinstance(exc.__cause__, APIConnectionError):
+#                 raise
+#             latest = await checkpoint_storage.get_latest(workflow_name=WORKFLOW_NAME)
+#             if latest is None or attempt == max_attempts:
+#                 raise
+#             print(
+#                 f"\n[RESUME] {type(exc).__name__} on attempt {attempt}/{max_attempts}"
+#                 f"; resuming from checkpoint {latest.checkpoint_id}"
+#             )
+#             # Claude: after the first failure we RESUME the saved run — drop the
+#             # original message/responses and continue from the checkpoint instead.
+#             run_kwargs = {
+#                 "checkpoint_id": latest.checkpoint_id,
+#                 "checkpoint_storage": checkpoint_storage,
+#             }
 
 
 async def main():
@@ -720,18 +733,54 @@ async def main():
     # block. The run -> answer -> resume loop is otherwise identical; _stream_segment
     # renders the events and hands back the WorkflowRunResult so we can still read
     # its pending requests.
-    result = await _run_with_resume(workflow, checkpoint_storage, message="start")
+    result = await _stream_segment(
+        workflow.run(message="start", stream=True), checkpoint_storage
+    )
     while True:
-        # SOHAM: the following is basically the workflow equivalent of
-        # result.user_input_requests which we get while calling standalone agents
-        # (or chunk.user_input_requests in case of streaming).
-        requests = result.get_request_info_events()
-        if not requests:
-            break
-        responses = await answer_pending_requests(requests)
-        result = await _run_with_resume(
-            workflow, checkpoint_storage, responses=responses
-        )
+        try:
+            # TODO: Claude Review: this raise fires BEFORE _stream_segment runs, so at
+            # this point the previous run has already finished and already checkpointed
+            # its paused state. Resuming from get_latest just re-surfaces the same
+            # pending question `result` already holds -- so this tests resume, not
+            # failure RECOVERY, and nothing failed to re-run. A real transient failure
+            # happens mid-run (an agent API call), i.e. INSIDE _stream_segment, where
+            # the last checkpoint sits one step behind the failure and resuming
+            # re-runs that step. To exercise that, move the raise to wrap the
+            # _stream_segment(...) calls (inside this try) instead of here.
+            # (Verified: apply_checkpoint re-emits pending requests on resume,
+            # _runner_context.py:423-426.)
+            # SOHAM: throw an exception 1/3rd of the time.
+            rand_int = random.choice([1, 2, 3])
+            if rand_int == 3:
+                raise RandomException
+
+            # SOHAM: result.get_request_info_events() is basically the workflow
+            # equivalent of result.user_input_requests which we get while calling
+            # standalone agents (or chunk.user_input_requests in case of streaming).
+            requests = result.get_request_info_events()
+            if not requests:
+                break
+            responses = await answer_pending_requests(requests)
+            result = await _stream_segment(
+                workflow.run(responses=responses, stream=True), checkpoint_storage
+            )
+        except RandomException:
+            # TODO: fill this up referring to docs, not to claude commented code
+            # Do we assume that the result will not be available at all?
+            print("RANDOM EXCEPTION OCCURRED!")
+            latest_checkpoint = await checkpoint_storage.get_latest(
+                workflow_name=workflow.name
+            )
+            if not latest_checkpoint:
+                raise RuntimeError("No checkpoints found!")
+            print(f"RESTARTING FROM CHECKPOINT: {latest_checkpoint.checkpoint_id}")
+
+            result = await _stream_segment(
+                workflow.run(
+                    checkpoint_id=latest_checkpoint.checkpoint_id, stream=True
+                ),
+                checkpoint_storage,
+            )
 
 
 if __name__ == "__main__":
@@ -740,10 +789,18 @@ if __name__ == "__main__":
 
 # TODO: next up - checkpointing
 # 1. print checkpoints (done)
-# 2. store checkpoints somewhere (preferably db but what are the other
+# 2. try somehow interrupting and resuming from a checkpoint - save the checkpoint,
+# raise an exception manually on random choice and resume workflow using that checkpoint
+# id.
+# Resume vs rehydrate checkpoints? refer doc
+# 3. store checkpoints somewhere (preferably db but what are the other
 # providers?) and inspect them.
-# 3. Check out BS's repo. it doesn't have an outright checkpoint provider. So how is it
-# handled there?
-# 4. try somehow interrupting and resuming from a checkpoint
+# 4. Check out BS's repo. it doesn't have an outright checkpoint provider. So how is it
+# handled there? Current version has a single agent - but what about the orchestrator
+# version?
 # TODO: further research: orchestrators, workflows as elements in a graph
 # (workflowexecutor as per claude)
+# 1. try to create your own workflow in another file without claude, then use it as an
+# executor in this file.
+# 2. repeat the same with orchestrator
+# TODO: print all llm calls
