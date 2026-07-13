@@ -19,15 +19,12 @@ Design rationale (why this shape, not a "pure" cycle of agent-nodes):
   for the imperative version: graphs are worst at dynamic, human-driven control
   flow, best at deterministic orchestration.
 
-Two wins this gives us over main.py for free:
-  1. No session pollution. main.py shares ONE session between Soham and the Judge,
-     so the Judge's verdicts leak into Soham's history. Here the Judge runs
-     STATELESS on its own transcript (see GatherRequirements), and every
-     AgentExecutor node has its own isolated session.
-  2. Bounded loops. WorkflowBuilder(max_iterations=...) caps total supersteps
-     (DEFAULT_MAX_ITERATIONS = 100), so the XL<->Amma review loop can't ping-pong
-     forever the way main.py's `while True` can. (Caveat: it bounds the WHOLE run,
-     front half included — see build_workflow().)
+One real win this shape gives us over main.py: bounded loops.
+  WorkflowBuilder(max_iterations=...) caps total supersteps (DEFAULT_MAX_ITERATIONS
+  = 100), so the XL<->Amma review loop can't ping-pong forever the way main.py's
+  `while True` can. (Caveat: it bounds the WHOLE run, front half included — see
+  build_workflow().) Session handling is otherwise the same as main.py: XL and Amma
+  each get their own session, and Soham and the Judge still share one.
 """
 
 import asyncio
@@ -221,8 +218,8 @@ class GatherRequirements(Executor):
 
         if request.kind == "confirm" and response.strip().lower() == "y":
             # Proposal generated from the shared session, which by now holds the
-            # full conversation — the judge below runs on the session too, so
-            # every user turn (including the one that flips `ready`) is already
+            # full conversation — the judge ran on this session every prior turn,
+            # so every user turn (including the one that flipped `ready`) is already
             # in it. Same prompt as main.py.
             details = await self._sm_agent.run(
                 Message(
@@ -399,7 +396,7 @@ class PresentProposal(Executor):
     ) -> None:
         proposal_file_path = ctx.get_state("proposal_file_path")
         # Claude: stream the summary so it types out live under "Soham" (executor_id
-        # "present"); _stream_soham yields one update per chunk.
+        # "present_proposal"); _stream_soham yields one update per chunk.
         await _stream_soham(
             self._sm_agent,
             Message(
@@ -477,9 +474,13 @@ def build_workflow(checkpoint_storage=None):
 
 
 # Claude: map executor ids -> the agent persona behind them, so outputs are
-# attributed correctly. Every AgentExecutor yields its OWN reply as workflow
-# output, so xl and amma each surface here; without this map the driver would
-# mislabel Amma's review as "Soham".
+# attributed correctly. Two things this buys us: it collapses the two Soham-backed
+# executors (gather_requirements + present_proposal) under the single name "Soham",
+# and it prettifies xl/amma into XL/Amma. Without this map the driver falls back to
+# the raw executor id (see _stream_segment's .get(id, id)), so you'd see
+# "[AGENT amma]" / "[AGENT gather_requirements]" instead of the persona names.
+# (An even earlier, pre-streaming driver hardcoded "Soham" and so mislabeled Amma —
+# the bug this map first fixed; today's fallback is the raw id, not "Soham".)
 EXECUTOR_LABELS = {
     "gather_requirements": "Soham",
     "present_proposal": "Soham",
@@ -742,10 +743,6 @@ async def main():
     # run -> collect pending human/approval requests -> answer -> resume. The
     # `responses=` kwarg is how you feed answers back in (_workflow.py:519). The run
     # is done when a resume returns with no more pending requests.
-    # SOHAM: workflow.run always needs an input to run. So we give this message: start.
-    # If we try workflow.run() without any input:
-    # ValueError: Must provide at least one of: 'message' (new run),
-    # 'responses' (send responses), or 'checkpoint_id' (resume from checkpoint).
     # Claude: stream=True makes run() return a ResponseStream we iterate live, so
     # every agent (Soham, XL, Amma) types out its reply instead of dumping it in one
     # block. The run -> answer -> resume loop is otherwise identical; _stream_segment
@@ -761,6 +758,11 @@ async def main():
                 # Earlier, this was in the except clause. But, the exception can occur
                 # anytime inside the workflow.run itself. In case the exception occurred
                 # inside the except clause, there was no guard. So moved it here.
+                # Resuming vs rehydrating checkpoints:
+                # Instead of resuming the same workflow instance from a saved
+                # checkpoint, we can even use that checkpoint in an entirely new
+                # workflow instance.
+                # Refer: https://learn.microsoft.com/en-us/agent-framework/workflows/checkpoints?tabs=py-ckpt-inmemory&pivots=programming-language-python#rehydrating-from-checkpoints
                 result = await _stream_segment(
                     workflow.run(
                         checkpoint_id=checkpoint_to_resume.checkpoint_id, stream=True
@@ -774,6 +776,12 @@ async def main():
                 )
                 responses = None
             else:
+                # SOHAM: workflow.run always needs an input to run. So we give this
+                # message: start.
+                # If we try workflow.run() without any input:
+                # ValueError: Must provide at least one of: 'message' (new run),
+                # 'responses' (send responses), or 'checkpoint_id'
+                # (resume from checkpoint).
                 result = await _stream_segment(
                     workflow.run(message="start", stream=True), checkpoint_storage
                 )
@@ -813,10 +821,9 @@ if __name__ == "__main__":
 # 2. try somehow interrupting and resuming from a checkpoint - save the checkpoint,
 # raise an exception manually on random choice and resume workflow using that checkpoint
 # id. (done)
-# 3. Resume vs rehydrate checkpoints? refer doc
-# 4. store checkpoints somewhere (preferably db but what are the other
+# 3. store checkpoints somewhere (preferably db but what are the other
 # providers?) and inspect them.
-# 5. Check out BS's repo. it doesn't have an outright checkpoint provider. So how is it
+# 4. Check out BS's repo. it doesn't have an outright checkpoint provider. So how is it
 # handled there? Current version has a single agent - but what about the orchestrator
 # version?
 # TODO: further research: orchestrators, workflows as elements in a graph
