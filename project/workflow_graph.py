@@ -114,7 +114,10 @@ async def _stream_soham(
     yield_output. Streaming flips that: the text goes out via yield_output here, and
     request_info now carries only the routing `kind`.
     """
-    # TODO: explain why it was kept here instead of main
+    # Initially, I had kept this in main. However, there the exception was technically
+    # being thrown OUTSIDE the workflow run. Checkpointing is best tested when an
+    # exception occurs INSIDE the workflow run (this function is one of the functions
+    # which runs inside the workflow).
     throw_random_exception()
     async for update in agent.run(message, session=session, stream=True):
         # SOHAM: ctx.yield_output yields the outputs of the workflow which the user
@@ -755,7 +758,9 @@ async def main():
     while True:
         try:
             if checkpoint_to_resume:
-                # TODO: Explain why here and not in except clause
+                # Earlier, this was in the except clause. But, the exception can occur
+                # anytime inside the workflow.run itself. In case the exception occurred
+                # inside the except clause, there was no guard. So moved it here.
                 result = await _stream_segment(
                     workflow.run(
                         checkpoint_id=checkpoint_to_resume.checkpoint_id, stream=True
@@ -807,11 +812,11 @@ if __name__ == "__main__":
 # 1. print checkpoints (done)
 # 2. try somehow interrupting and resuming from a checkpoint - save the checkpoint,
 # raise an exception manually on random choice and resume workflow using that checkpoint
-# id. (done but understand better)
-# Resume vs rehydrate checkpoints? refer doc
-# 3. store checkpoints somewhere (preferably db but what are the other
+# id. (done)
+# 3. Resume vs rehydrate checkpoints? refer doc
+# 4. store checkpoints somewhere (preferably db but what are the other
 # providers?) and inspect them.
-# 4. Check out BS's repo. it doesn't have an outright checkpoint provider. So how is it
+# 5. Check out BS's repo. it doesn't have an outright checkpoint provider. So how is it
 # handled there? Current version has a single agent - but what about the orchestrator
 # version?
 # TODO: further research: orchestrators, workflows as elements in a graph
