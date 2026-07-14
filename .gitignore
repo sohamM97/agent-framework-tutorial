@@ -1,4 +1,4 @@
 .env
 project/outputs/*
-!*.gitkeep
+!project/outputs/sample
 __pycache__
