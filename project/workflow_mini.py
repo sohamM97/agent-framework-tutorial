@@ -1,7 +1,16 @@
 import asyncio
 from typing import cast
 
-from agent_framework import Agent, AgentResponse, WorkflowBuilder
+from agent_framework import (
+    Agent,
+    AgentExecutorRequest,
+    AgentExecutorResponse,
+    AgentResponse,
+    Message,
+    WorkflowBuilder,
+    WorkflowContext,
+    executor,
+)
 from client import client
 from tools import get_files_under_dir, read_from_file
 
@@ -22,7 +31,27 @@ marketing_agent = Agent(
 )
 
 
-# TODO: Claude Review: this 400s when run, but ONLY because Summarizer's tools need
+@executor(id="forward_summary")
+# TODO: why is summary an AgentExecutorResponse? Why not, say, AgentResponse or
+# even a string? The AgentResponse import was copied from code samples, while
+# AgentExecutorResponse was something claude suggested. Understand both.
+async def forward_summary(
+    summary: AgentExecutorResponse, ctx: WorkflowContext[AgentExecutorRequest]
+):
+    text = summary.agent_response.text
+    # TODO: when I tried sending only text, got some warning. find out the deal
+    # with this. The warning was:
+    # AgentExecutor 'Marketing': from_str handler invoked with an empty cache.
+    # If you are chaining from an AgentExecutor, the upstream custom executor may be
+    # emitting a plain str instead of using AgentExecutorResponse.with_text(...), which
+    # causes the full conversation context to be lost.
+    await ctx.send_message(
+        AgentExecutorRequest(messages=[Message(role="user", contents=[text])])
+    )
+
+
+# TODO: The following is fixed now, but need to understand better:
+# Claude Review: this 400s when run, but ONLY because Summarizer's tools need
 # approval. (WorkflowBuilder wraps each bare Agent in an AgentExecutor node —
 # _workflow_builder.py:189-221 — and that wrapper owns the two message lists below.)
 # Each AgentExecutor holds TWO lists of messages: (a) the agent's own session (its
@@ -41,7 +70,8 @@ marketing_agent = Agent(
 def build_mini_workflow():
     return (
         WorkflowBuilder(start_executor=summarizer_agent, output_from="all")
-        .add_edge(summarizer_agent, marketing_agent)
+        .add_edge(summarizer_agent, forward_summary)
+        .add_edge(forward_summary, marketing_agent)
         .build()
     )
 
@@ -76,9 +106,7 @@ async def main():
     # when the workflow either finishes (goes idle) OR pauses for approval;
     # get_request_info_events() tells the two apart. We answer any pending approvals and
     # feed them back via responses= to continue the SAME run from where it paused.
-    result = await workflow.run(
-        "Files are present at outputs/bhojpuri_baraat_song_generator"
-    )
+    result = await workflow.run("Files are present at outputs/sample")
     while True:
         requests = result.get_request_info_events()
         if not requests:
@@ -90,6 +118,8 @@ async def main():
     for output in outputs:
         print(f"{output.messages[0].author_name}: {output.text}\n")
 
+    # This is just to print the final state, ideally "WorkflowRunState.IDLE"
+    # Copied from samples
     print("Final state:", result.get_final_state())
 
 
