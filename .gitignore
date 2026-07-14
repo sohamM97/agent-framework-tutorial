@@ -2,3 +2,4 @@
 project/outputs/*
 !project/outputs/sample
 __pycache__
+workflow.pdf

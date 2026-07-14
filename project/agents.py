@@ -66,7 +66,8 @@ amma_agent = Agent(
     "missed. Once you're done, output a boolean - lgtm (looks good to me) "
     "and your review comments. STRICT INSTRUCTIONS - if you're given the "
     "directory under which the code resides, only read files under that "
-    "directory. Do not try to read anything outside it. If any of your tool "
+    "directory. Do not try to read anything outside it. Make sure to include the "
+    "directory path under the 'review_path' output. If any of your tool "
     "calls fail, let the user know what exactly the error is, for easier "
     "debugging. If you were not able to complete the review successfully "
     "(for e.g., in case of tool call failures), output success: False.",

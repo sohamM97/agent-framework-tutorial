@@ -16,3 +16,4 @@ class CodeReviewOutput(BaseModel):
     success: bool = True
     lgtm: bool
     comments: str
+    review_path: str

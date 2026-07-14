@@ -38,6 +38,7 @@ from agent_framework import (
     AgentExecutor,
     AgentExecutorRequest,
     AgentExecutorResponse,
+    AgentResponse,
     AgentResponseUpdate,
     AgentSession,
     Case,
@@ -48,7 +49,9 @@ from agent_framework import (
     WorkflowBuilder,
     WorkflowCheckpoint,
     WorkflowContext,
-    # WorkflowViz,
+    WorkflowExecutor,
+    # TODO: Also look into dev-tools
+    WorkflowViz,
     executor,
     handler,
     response_handler,
@@ -62,6 +65,7 @@ from models import ProjectDetails
 # from openai import APIConnectionError
 from pydantic import BaseModel
 from tools import write_to_file
+from workflow_mini import build_mini_workflow
 
 # TODO: look into WorkflowEvent
 
@@ -359,6 +363,12 @@ async def ask_agent_to_fix(
     )
 
 
+# TODO: Claude Review: this returns True (-> handover -> mini_workflow) on a FAILED
+# review too, because `not verdict.success` and `verdict is None` count as "stop".
+# That was harmless when the True branch went to the old `done` no-op sink, but now it
+# markets an unreviewed product. To route ONLY genuine passes onward, gate handover on
+# `verdict is not None and verdict.success and verdict.lgtm`, and send failures
+# somewhere else.
 def review_passed(review: AgentExecutorResponse) -> bool:
     """Edge condition: stop the XL<->Amma loop when the review is done.
 
@@ -415,13 +425,33 @@ class PresentProposal(Executor):
         await ctx.send_message(xl_request)  # -> xl starts coding
 
 
-@executor(id="done")
-async def done(_review: AgentExecutorResponse) -> None:
-    # Claude: terminal sink. Matching main.py, there is no extra Soham message after
-    # the review — XL already reported where the code is and Amma's review was shown.
-    # Receiving Amma's passing response with nothing further sent lets the run go
-    # idle, which is how the driver detects completion.
-    pass
+# @executor(id="done")
+# async def done(_review: AgentExecutorResponse) -> None:
+#     # Claude: terminal sink. Matching main.py, there is no extra Soham message after
+#     # the review — XL already reported where the code is and Amma's review was shown.
+#     # Receiving Amma's passing response with nothing further sent lets the run go
+#     # idle, which is how the driver detects completion.
+#     pass
+
+
+@executor(id="handover_to_mini_workflow")
+async def handover(
+    review: AgentExecutorResponse, ctx: WorkflowContext[AgentExecutorRequest]
+):
+    # TODO: Claude Review: review_path is None when value is None (a failed review that
+    # review_passed still routed here), so the message becomes "Files present under
+    # None" and Summarizer reads a bogus path. Fixing the review_passed routing above
+    # makes this branch unreachable with a None value.
+    review_path = (
+        review.agent_response.value.review_path if review.agent_response.value else None
+    )
+    await ctx.send_message(
+        AgentExecutorRequest(
+            messages=[
+                Message(role="system", contents=[f"Files present under {review_path}"])
+            ]
+        )
+    )
 
 
 # Claude: a stable name so checkpoints can be listed back by workflow_name. Without
@@ -439,6 +469,12 @@ def build_workflow(checkpoint_storage=None):
     present_proposal = PresentProposal(sm_agent, sm_session)
     xl = AgentExecutor(xl_agent, id="xl")
     amma = AgentExecutor(amma_agent, id="amma")
+    mini_workflow = WorkflowExecutor(
+        build_mini_workflow(),
+        id="mini_workflow",
+        propagate_request=True,
+        allow_direct_output=True,
+    )
 
     # NOTE — max_iterations is the safety cap main.py's `while True` lacks, but it
     # bounds the WHOLE run (every superstep, conversation included), not just the
@@ -464,11 +500,12 @@ def build_workflow(checkpoint_storage=None):
         .add_switch_case_edge_group(
             amma,
             [
-                Case(condition=review_passed, target=done),
+                Case(condition=review_passed, target=handover),
                 Default(target=ask_agent_to_fix),
             ],
         )
         .add_edge(ask_agent_to_fix, xl)
+        .add_edge(handover, mini_workflow)
         .build()
     )
 
@@ -596,6 +633,25 @@ async def _stream_segment(stream, checkpoint_storage=None):
             print((_format_checkpoint(latest) if latest else "  (none)") + RESET)
             continue
         if event.type != "output":
+            continue
+        # Claude: a sub-workflow (mini_workflow) runs BATCH inside WorkflowExecutor, so
+        # its outputs arrive as whole AgentResponse objects (not streamed chunks), all
+        # tagged with the executor id "mini_workflow". Print each as its own labeled
+        # block keyed by its author (messages[0].author_name), so Summarizer and
+        # Marketing show separately instead of glued together under one header.
+        # Claude NOTE: this BATCH behavior isn't configurable. WorkflowExecutor always
+        # runs its sub-workflow non-streaming — self.workflow.run(...) with NO
+        # stream=True (_workflow_executor.py:408), then collects finished outputs via
+        # get_outputs() (:555). No flag streams a sub-workflow's tokens; verified
+        # identical across agent-framework 1.9/1.10/1.11 and main, and NOT documented
+        # anywhere (source is the only evidence). The one streaming path is
+        # workflow.as_agent(), but it forwards only the FINAL agent's reply
+        # (_agent.py:417-464).
+        if isinstance(event.data, AgentResponse):
+            msgs = event.data.messages
+            author = msgs[0].author_name if msgs else event.executor_id
+            print(f"\n[AGENT {author}]: {event.data.text}")
+            last_source = None  # make the next streamed event reprint its header
             continue
         # AgentResponseUpdate has .text (the chunk); a plain-string yield does not.
         chunk = getattr(event.data, "text", None)
@@ -735,9 +791,9 @@ async def main():
     checkpoint_storage = InMemoryCheckpointStorage()
     workflow = build_workflow(checkpoint_storage)
 
-    # # To save workflow visualization in a pdf
-    # viz = WorkflowViz(workflow)
-    # print(viz.save_pdf("workflow.pdf"))
+    # To save workflow visualization in a pdf
+    viz = WorkflowViz(workflow)
+    print(viz.save_pdf("workflow.pdf"))
 
     # NOTE — this driver loop is the imperative shell the workflow can't absorb:
     # run -> collect pending human/approval requests -> answer -> resume. The
@@ -755,9 +811,10 @@ async def main():
     while True:
         try:
             if checkpoint_to_resume:
-                # Earlier, this was in the except clause. But, the exception can occur
-                # anytime inside the workflow.run itself. In case the exception occurred
-                # inside the except clause, there was no guard. So moved it here.
+                # Soham: Earlier, this was in the except clause. But, the exception can
+                # occur anytime inside the workflow.run itself. In case the exception
+                # occurred inside the except clause, there was no guard.
+                # So moved it here.
                 # Resuming vs rehydrating checkpoints:
                 # Instead of resuming the same workflow instance from a saved
                 # checkpoint, we can even use that checkpoint in an entirely new
