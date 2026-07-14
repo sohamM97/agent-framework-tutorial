@@ -7,6 +7,7 @@ requires-python = ">=3.14"
 dependencies = [
     "agent-framework>=1.9",
     "agent-framework-core>=1.9",
+    "agent-framework-devui>=1.0.0b260514",
     "graphviz>=0.21",
     "pydantic>=2.13.4",
     "python-dotenv>=1.2.2",

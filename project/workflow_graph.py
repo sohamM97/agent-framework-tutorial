@@ -91,6 +91,14 @@ class RandomException(Exception):
     pass
 
 
+# TODO: Claude Review: this injection sabotages dev-ui runs. It's called at the top of
+# _stream_soham (so it fires on the opening greeting) and in ask_agent_to_review, ~1/3
+# of the time. Under `uv run` that's fine — main()'s driver loop catches RandomException
+# and resumes from the last checkpoint. But dev-ui runs the module-level `workflow`
+# directly and NEVER enters main(), so there's no catch/resume: ~1 in 3 dev-ui sessions
+# just crash (often at the very first turn). Now that dev-ui is a real entry point,
+# consider gating this behind an env var / flag that only the CLI driver sets, so
+# checkpoint testing stays on for `uv run` but dev-ui sessions don't randomly explode.
 def throw_random_exception():
     # SOHAM: throw an exception 1/3rd of the time, to test checkpointing
     rand_int = random.choice([1, 2, 3])
@@ -198,6 +206,26 @@ class GatherRequirements(Executor):
             response_type=ProjectRequirements,
         )
 
+    # TODO: Claude Review: dev-ui can't render a ProjectRequirements form for this
+    # executor and falls back to a plain string box. Two reasons:
+    #   1) The `response` param below is a union (str | ProjectRequirements). dev-ui
+    #      builds its input form from this handler's static signature and only accepts
+    #      a SINGLE concrete class as the response type (agent_framework_devui
+    #      _utils.py:386 -> isinstance(second_param_type, type) is False for a union),
+    #      so it returns None and falls back to {"type": "string"} (_executor.py:1125).
+    #   2) Deeper: dev-ui keys the form off (executor_id, request_type) only and never
+    #      sees the per-call response_type= we pass. Both the requirements turn and the
+    #      confirm turn share request_type=UserPrompt (told apart only by `kind` at
+    #      runtime), so one request_type can't map to two response shapes.
+    # Fix (only if we want dev-ui to RUN this flow, not just the CLI driver): split
+    # UserPrompt into distinct request types (e.g. RequirementsPrompt / ConfirmPrompt)
+    # and give each its own single-typed response_handler
+    # (on_requirements(..., response: ProjectRequirements, ...) and
+    # on_confirm(..., response: str, ...)). Also make the follow-up requirements ask
+    # (see the request_info at the bottom of this method) use ProjectRequirements too,
+    # so every requirements pause renders the same form. The CLI driver
+    # (take_input_from_user reads event.response_type per event) already handles the
+    # current union fine, so this restructure is purely for dev-ui.
     @response_handler
     async def on_human_turn(
         self,
@@ -510,6 +538,16 @@ def build_workflow(checkpoint_storage=None):
     )
 
 
+# SOHAM: Earlier, these were in main(). It was moved out just because devui needs
+# workflows to be at the module level to be able to detect them.
+# Claude: in-memory store — checkpoints live only for this process run. Item 2 of
+# the checkpointing TODO (persist to disk/db) would swap this for
+# FileCheckpointStorage or a custom CheckpointStorage. Passing it into
+# build_workflow is what enables saving.
+checkpoint_storage = InMemoryCheckpointStorage()
+workflow = build_workflow(checkpoint_storage)
+
+
 # Claude: map executor ids -> the agent persona behind them, so outputs are
 # attributed correctly. Two things this buys us: it collapses the two Soham-backed
 # executors (gather_requirements + present_proposal) under the single name "Soham",
@@ -784,13 +822,6 @@ async def answer_pending_requests(requests) -> dict:
 
 
 async def main():
-    # Claude: in-memory store — checkpoints live only for this process run. Item 2 of
-    # the checkpointing TODO (persist to disk/db) would swap this for
-    # FileCheckpointStorage or a custom CheckpointStorage. Passing it into
-    # build_workflow is what enables saving.
-    checkpoint_storage = InMemoryCheckpointStorage()
-    workflow = build_workflow(checkpoint_storage)
-
     # To save workflow visualization in a pdf
     viz = WorkflowViz(workflow)
     print(viz.save_pdf("workflow.pdf"))

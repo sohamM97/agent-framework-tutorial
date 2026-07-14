@@ -99,9 +99,12 @@ async def answer_approvals(requests) -> dict:
     return responses
 
 
-async def main():
-    workflow = build_mini_workflow()
+# Note: Earlier, this was in main(). It was moved out just because devui needs workflows
+# to be at the module level to be able to detect them.
+workflow = build_mini_workflow()
 
+
+async def main():
     # Claude: run once, then keep resuming until nothing is waiting on us. run() returns
     # when the workflow either finishes (goes idle) OR pauses for approval;
     # get_request_info_events() tells the two apart. We answer any pending approvals and
