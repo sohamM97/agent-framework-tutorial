@@ -42,11 +42,14 @@ async def forward_summary(
 ):
     text = summary.agent_response.text
     # TODO: when I tried sending only text, got some warning. find out the deal
-    # with this. The warning was:
+    # with this. The warning here was:
     # AgentExecutor 'Marketing': from_str handler invoked with an empty cache.
     # If you are chaining from an AgentExecutor, the upstream custom executor may be
     # emitting a plain str instead of using AgentExecutorResponse.with_text(...), which
     # causes the full conversation context to be lost.
+    # However, when passing on info to a workflow executor (instead of an agent),
+    # passing on a string is expected and in fact, that is what works in case the
+    # workflow executor wraps a SequentialBuilder (AgentExecutorRequest does not).
     await ctx.send_message(
         AgentExecutorRequest(messages=[Message(role="user", contents=[text])])
     )

@@ -135,7 +135,19 @@ class GatherRequirements(Executor):
         # SOHAM: ctx.request_info is used when asking input from the user.
         # The executor must have a @response_handler method to handle user inputs.
         # Source: https://learn.microsoft.com/en-us/agent-framework/workflows/human-in-the-loop?pivots=programming-language-python
-        # TODO: need some more clarity on request_data
+        # Any request_info call has two primary args:
+        # request_data: The request that goes to whoever is driving the workflow while
+        #   asking for a response from them. We can pass our custom data types and data,
+        #   and whoever is receiving the request must process them accordingly. Like in
+        #   this case, we send a UserPrompt with kind "requirements" or "confirm", and
+        #   the response_handler does the processing based on the kind.
+        # response_type: The expected response type from the user. In this particular
+        #   case, we expect a ProjectRequirements with a project_idea and an optional
+        #   additional_remarks. In this case, we process this multi-field response
+        #   ourselves in utils.take_input_from_user function. Earlier, this method used
+        #   to just take strings as inputs using python's input() function. Now it
+        #   handles both strings and custom pydantic data types.
+
         await ctx.request_info(
             request_data=UserPrompt(kind="requirements"),
             response_type=ProjectRequirements,
