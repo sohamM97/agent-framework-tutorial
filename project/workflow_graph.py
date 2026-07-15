@@ -50,7 +50,6 @@ from agent_framework import (
     WorkflowCheckpoint,
     WorkflowContext,
     WorkflowExecutor,
-    # TODO: Also look into dev-tools
     WorkflowViz,
     executor,
     handler,
@@ -65,7 +64,7 @@ from models import ProjectDetails
 # from openai import APIConnectionError
 from pydantic import BaseModel
 from tools import write_to_file
-from workflow_mini import build_mini_workflow
+from workflow_mini import mini_workflow, mini_workflow_seq
 
 # TODO: look into WorkflowEvent
 
@@ -463,9 +462,7 @@ class PresentProposal(Executor):
 
 
 @executor(id="handover_to_mini_workflow")
-async def handover(
-    review: AgentExecutorResponse, ctx: WorkflowContext[AgentExecutorRequest]
-):
+async def handover(review: AgentExecutorResponse, ctx: WorkflowContext[str]):
     # TODO: Claude Review: review_path is None when value is None (a failed review that
     # review_passed still routed here), so the message becomes "Files present under
     # None" and Summarizer reads a bogus path. Fixing the review_passed routing above
@@ -473,13 +470,7 @@ async def handover(
     review_path = (
         review.agent_response.value.review_path if review.agent_response.value else None
     )
-    await ctx.send_message(
-        AgentExecutorRequest(
-            messages=[
-                Message(role="system", contents=[f"Files present under {review_path}"])
-            ]
-        )
-    )
+    await ctx.send_message(f"Files present under {review_path}")
 
 
 # Claude: a stable name so checkpoints can be listed back by workflow_name. Without
@@ -497,8 +488,8 @@ def build_workflow(checkpoint_storage=None):
     present_proposal = PresentProposal(sm_agent, sm_session)
     xl = AgentExecutor(xl_agent, id="xl")
     amma = AgentExecutor(amma_agent, id="amma")
-    mini_workflow = WorkflowExecutor(
-        build_mini_workflow(),
+    mini_workflow_exec = WorkflowExecutor(
+        mini_workflow,
         id="mini_workflow",
         propagate_request=True,
         allow_direct_output=True,
@@ -533,7 +524,7 @@ def build_workflow(checkpoint_storage=None):
             ],
         )
         .add_edge(ask_agent_to_fix, xl)
-        .add_edge(handover, mini_workflow)
+        .add_edge(handover, mini_workflow_exec)
         .build()
     )
 
@@ -860,7 +851,8 @@ async def main():
                 checkpoint_to_resume = None
             elif responses:
                 result = await _stream_segment(
-                    workflow.run(responses=responses, stream=True), checkpoint_storage
+                    workflow.run(responses=responses, stream=True),
+                    checkpoint_storage,
                 )
                 responses = None
             else:
@@ -914,9 +906,4 @@ if __name__ == "__main__":
 # 4. Check out BS's repo. it doesn't have an outright checkpoint provider. So how is it
 # handled there? Current version has a single agent - but what about the orchestrator
 # version?
-# TODO: further research: orchestrators, workflows as elements in a graph
-# (workflowexecutor as per claude)
-# 1. try to create your own workflow in another file without claude, then use it as an
-# executor in this file.
-# 2. repeat the same with orchestrator
 # TODO: print all llm calls

@@ -7,10 +7,12 @@ from agent_framework import (
     AgentExecutorResponse,
     AgentResponse,
     Message,
+    Workflow,
     WorkflowBuilder,
     WorkflowContext,
     executor,
 )
+from agent_framework.orchestrations import SequentialBuilder
 from client import client
 from tools import get_files_under_dir, read_from_file
 
@@ -101,14 +103,15 @@ async def answer_approvals(requests) -> dict:
 
 # Note: Earlier, this was in main(). It was moved out just because devui needs workflows
 # to be at the module level to be able to detect them.
-workflow = build_mini_workflow()
+mini_workflow = build_mini_workflow()
+
+mini_workflow_seq = SequentialBuilder(
+    participants=[summarizer_agent, forward_summary, marketing_agent],
+    intermediate_outputs=True,
+).build()
 
 
-async def main():
-    # Claude: run once, then keep resuming until nothing is waiting on us. run() returns
-    # when the workflow either finishes (goes idle) OR pauses for approval;
-    # get_request_info_events() tells the two apart. We answer any pending approvals and
-    # feed them back via responses= to continue the SAME run from where it paused.
+async def run_workflow(workflow: Workflow):
     result = await workflow.run("Files are present at outputs/sample")
     while True:
         requests = result.get_request_info_events()
@@ -124,6 +127,21 @@ async def main():
     # This is just to print the final state, ideally "WorkflowRunState.IDLE"
     # Copied from samples
     print("Final state:", result.get_final_state())
+
+
+async def main():
+    # Claude: run once, then keep resuming until nothing is waiting on us. run() returns
+    # when the workflow either finishes (goes idle) OR pauses for approval;
+    # get_request_info_events() tells the two apart. We answer any pending approvals and
+    # feed them back via responses= to continue the SAME run from where it paused.
+
+    print("---------------- DEMONSTRATING SIMPLE WORKFLOW ------------------------")
+
+    await run_workflow(workflow=mini_workflow)
+
+    print("---------------- DEMONSTRATING SEQUENTIAL WORKFLOW --------------------")
+
+    await run_workflow(workflow=mini_workflow_seq)
 
 
 if __name__ == "__main__":
