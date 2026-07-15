@@ -21,7 +21,7 @@ class RandomException(Exception):
 # checkpoint testing stays on for `uv run` but dev-ui sessions don't randomly explode.
 def throw_random_exception():
     # SOHAM: throw an exception 1/3rd of the time, to test checkpointing
-    rand_int = random.choice([1, 2, 3])
+    rand_int = random.randint(1, 3)
     if rand_int == 3:
         raise RandomException
 
