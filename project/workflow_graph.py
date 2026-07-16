@@ -67,7 +67,7 @@ from utils import (
 )
 from workflow_mini import mini_workflow, mini_workflow_seq
 
-# TODO: look into WorkflowEvent
+# TODO: look into WorkflowEvent - some stuff is already printed in utils.py
 
 
 # ---------------------------------------------------------------------------

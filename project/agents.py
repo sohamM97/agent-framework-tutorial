@@ -7,8 +7,6 @@ from tools import get_files_under_dir, read_from_file, write_to_file
 # instructions — it's true every turn. Per-turn control (greet/propose/
 # summarize) is driven per-run below, which is an intentional design
 # choice.
-# TODO: need cap on no. of messages as a safeguard. else if the judge never
-# says satisfied, the loop keeps going forever.
 sm_agent = Agent(
     client=client,
     name="Soham",

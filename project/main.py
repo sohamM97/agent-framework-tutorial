@@ -8,7 +8,6 @@ from models import ProjectDetails
 from tools import write_to_file
 
 # TODO: something with context provider
-# TODO: how to incorporate workflows into all this.
 # TODO: difference between session and context?
 
 # TODO: overall flow:
@@ -235,8 +234,6 @@ async def main():
 
     while True:
         amma_session = amma_agent.create_session()
-        # TODO: agent hallucinates file names which are not present at the out
-        # directory. give it a list files tool.
         code_review = await run_agent(
             agent=amma_agent,
             messages=Message(
