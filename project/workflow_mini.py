@@ -34,12 +34,9 @@ marketing_agent = Agent(
 
 
 @executor(id="forward_summary")
-# TODO: why is summary an AgentExecutorResponse? Why not, say, AgentResponse or
-# even a string? The AgentResponse import was copied from code samples, while
-# AgentExecutorResponse was something claude suggested. Understand both.
-async def forward_summary(
-    summary: AgentExecutorResponse, ctx: WorkflowContext[AgentExecutorRequest]
-):
+# Note: data type of summary needs to be AgentExecutorResponse, NOT AgentResponse or str
+# Else, TypeCompatibilityError is thrown.
+async def forward_summary(summary: AgentExecutorResponse, ctx: WorkflowContext[str]):
     text = summary.agent_response.text
     # TODO: when I tried sending only text, got some warning. find out the deal
     # with this. The warning here was:
@@ -51,8 +48,32 @@ async def forward_summary(
     # passing on a string is expected and in fact, that is what works in case the
     # workflow executor wraps a SequentialBuilder (AgentExecutorRequest does not).
     await ctx.send_message(
-        AgentExecutorRequest(messages=[Message(role="user", contents=[text])])
+        text
+        # Note: One interesting behaviour. In the simple Sequential case, we were
+        # sending AgentExecutorRequest from send_message, which was working (str also
+        # works). But in case of fan-in, AgentExecutorRequest throws this error:
+        # -----------------------------------------------------------------------------
+        # agent_framework._workflows._validation.TypeCompatibilityError:
+        # [TYPE_COMPATIBILITY] Type incompatibility between executors
+        # 'forward_summary' -> 'Marketing'. Source executor outputs types
+        # ["<class 'agent_framework._workflows._agent_executor.AgentExecutorRequest'>"]
+        # but target executor can only handle types
+        # ["<class 'agent_framework._types.Message'>",
+        # 'list[str | agent_framework._types.Message]',
+        # "<class 'agent_framework._workflows._agent_executor.AgentExecutorResponse'>",
+        # "<class 'str'>",
+        # "<class 'agent_framework._workflows._agent_executor.AgentExecutorRequest'>"].
+        # -----------------------------------------------------------------------------
+        # AgentExecutorRequest(messages=[Message(role="user", contents=[text])])
     )
+
+
+@executor(id="reverse_summary_and_forward")
+async def reverse_summary_and_forward(
+    summary: AgentExecutorResponse, ctx: WorkflowContext[str]
+):
+    text = summary.agent_response.text
+    await ctx.send_message(text)
 
 
 # TODO: The following is fixed now, but need to understand better:
@@ -76,7 +97,13 @@ def build_mini_workflow():
     return (
         WorkflowBuilder(start_executor=summarizer_agent, output_from="all")
         .add_edge(summarizer_agent, forward_summary)
-        .add_edge(forward_summary, marketing_agent)
+        #### Sequential ####
+        # .add_edge(forward_summary, marketing_agent)
+        #### Fan-in ########
+        .add_edge(summarizer_agent, reverse_summary_and_forward)
+        .add_fan_in_edges(
+            [forward_summary, reverse_summary_and_forward], marketing_agent
+        )
         .build()
     )
 
@@ -110,7 +137,7 @@ mini_workflow = build_mini_workflow()
 
 mini_workflow_seq = SequentialBuilder(
     participants=[summarizer_agent, forward_summary, marketing_agent],
-    intermediate_outputs=True,
+    intermediate_output_from=[summarizer_agent],
 ).build()
 
 
@@ -123,7 +150,10 @@ async def run_workflow(workflow: Workflow):
         responses = await answer_approvals(requests)
         result = await workflow.run(responses=responses)
 
-    outputs = cast(list[AgentResponse], result.get_outputs())
+    # This was copied from the samples but anyway, the data type of outpus is
+    # list[AgentResponse]
+    # outputs = cast(list[AgentResponse], result.get_outputs())
+    outputs = result.get_outputs()
     for output in outputs:
         print(f"{output.messages[0].author_name}: {output.text}\n")
 
@@ -142,9 +172,9 @@ async def main():
 
     await run_workflow(workflow=mini_workflow)
 
-    print("---------------- DEMONSTRATING SEQUENTIAL WORKFLOW --------------------")
+    # print("---------------- DEMONSTRATING SEQUENTIAL WORKFLOW --------------------")
 
-    await run_workflow(workflow=mini_workflow_seq)
+    # await run_workflow(workflow=mini_workflow_seq)
 
 
 if __name__ == "__main__":
