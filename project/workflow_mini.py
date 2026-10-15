@@ -1,12 +1,10 @@
 import asyncio
-from typing import cast
 
 from agent_framework import (
     Agent,
-    AgentExecutorRequest,
+    # AgentExecutorRequest,
     AgentExecutorResponse,
-    AgentResponse,
-    Message,
+    # Message,
     Workflow,
     WorkflowBuilder,
     WorkflowContext,
@@ -36,7 +34,10 @@ marketing_agent = Agent(
 @executor(id="forward_summary")
 # Note: data type of summary needs to be AgentExecutorResponse, NOT AgentResponse or str
 # Else, TypeCompatibilityError is thrown.
-async def forward_summary(summary: AgentExecutorResponse, ctx: WorkflowContext[str]):
+async def forward_summary(
+    summary: AgentExecutorResponse,
+    ctx: WorkflowContext[str],  # WorkflowContext[AgentExecutorRequest],
+):
     text = summary.agent_response.text
     # TODO: when I tried sending only text, got some warning. find out the deal
     # with this. The warning here was:
@@ -70,10 +71,14 @@ async def forward_summary(summary: AgentExecutorResponse, ctx: WorkflowContext[s
 
 @executor(id="reverse_summary_and_forward")
 async def reverse_summary_and_forward(
-    summary: AgentExecutorResponse, ctx: WorkflowContext[str]
+    summary: AgentExecutorResponse,
+    ctx: WorkflowContext[str],  # WorkflowContext[AgentExecutorRequest],
 ):
     text = summary.agent_response.text
-    await ctx.send_message(text)
+    await ctx.send_message(
+        text
+        # AgentExecutorRequest(messages=[Message(role="user", contents=[text])])
+    )
 
 
 # TODO: The following is fixed now, but need to understand better:
@@ -96,11 +101,19 @@ async def reverse_summary_and_forward(
 def build_mini_workflow():
     return (
         WorkflowBuilder(start_executor=summarizer_agent, output_from="all")
-        .add_edge(summarizer_agent, forward_summary)
-        #### Sequential ####
+        #### Sequential #############
+        # .add_edge(summarizer_agent, forward_summary)
         # .add_edge(forward_summary, marketing_agent)
-        #### Fan-in ########
-        .add_edge(summarizer_agent, reverse_summary_and_forward)
+        #### Fan-in - simple ########
+        # .add_edge(summarizer_agent, forward_summary)
+        # .add_edge(summarizer_agent, reverse_summary_and_forward)
+        # .add_fan_in_edges(
+        #     [forward_summary, reverse_summary_and_forward], marketing_agent
+        # )
+        #### Fan-out and fan-in #####
+        .add_fan_out_edges(
+            summarizer_agent, [forward_summary, reverse_summary_and_forward]
+        )
         .add_fan_in_edges(
             [forward_summary, reverse_summary_and_forward], marketing_agent
         )
@@ -142,7 +155,10 @@ mini_workflow_seq = SequentialBuilder(
 
 
 async def run_workflow(workflow: Workflow):
-    result = await workflow.run("Files are present at outputs/sample")
+    start_message = "Files are present at outputs/sample"
+    print(f"Sending the following message to workflow agents: {start_message}")
+
+    result = await workflow.run(start_message)
     while True:
         requests = result.get_request_info_events()
         if not requests:
@@ -150,12 +166,14 @@ async def run_workflow(workflow: Workflow):
         responses = await answer_approvals(requests)
         result = await workflow.run(responses=responses)
 
-    # This was copied from the samples but anyway, the data type of outpus is
+    # This was copied from the samples but anyway, the data type of outputs is
     # list[AgentResponse]
     # outputs = cast(list[AgentResponse], result.get_outputs())
     outputs = result.get_outputs()
     for output in outputs:
-        print(f"{output.messages[0].author_name}: {output.text}\n")
+        print()
+        print(f"##### {output.messages[0].author_name.upper()} ######")
+        print(output.text)
 
     # This is just to print the final state, ideally "WorkflowRunState.IDLE"
     # Copied from samples
