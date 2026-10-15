@@ -114,6 +114,11 @@ def build_mini_workflow():
         .add_fan_out_edges(
             summarizer_agent, [forward_summary, reverse_summary_and_forward]
         )
+        # Claude NOTE: fan-in [b, c] -> d, b sends str, c sends int: d gets ONE list,
+        # so d's input type must be list[str | int]. Two catches:
+        # - Order follows the add_fan_in_edges list, not who finished first.
+        # - The list is flat: if b does ctx.send_message twice, d gets ["b1", "b2", 42].
+        # Source: FanInEdgeRunner.send_message in _workflows/_edge_runner.py
         .add_fan_in_edges(
             [forward_summary, reverse_summary_and_forward], marketing_agent
         )
