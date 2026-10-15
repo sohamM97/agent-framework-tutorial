@@ -11,15 +11,53 @@
 
 ## Memory
 
-Two types:
-- Session level memory: memory in a certain **thread** or **session**
-    - Earlier, they were called "threads" in code; now they are called "sessions".
-- Long term memory i.e. **context**: memory across sessions or threads
-    - In MAF, they are managed using context providers
+> Checked against the `agent-framework` 1.11.0 source. This section used to say that
+> memory "across sessions" is what context providers give you. That is not true, and it is
+> an easy thing to believe — see below.
 
-Context providers have two sections:
-- Before invocation: Inject context derived from persistent memory (e.g. - user's preferred language: Spanish)
-- After invocation: Inspect the user messages + agent responses and update your memory (e.g. - the user just told you a new preference)
+The thing to get straight first: **a session does not hold the conversation.**
+`AgentSession` is described in the source as a "lightweight state container". All it has is
+`session_id`, `service_session_id`, and a `state` dict.
+
+So where do the messages live? **The chat history is itself a context provider.**
+`InMemoryHistoryProvider` is "the default provider auto-added by the agent for local
+sessions when no providers are configured", and it keeps the messages in
+`session.state["messages"]`.
+
+That gives the real picture:
+
+- A **session** is one ongoing conversation, identified by `session_id`. Create it with
+  `agent.create_session()` and pass it as `session=` on each run.
+    - These used to be called **threads**. `get_new_thread()` became `create_session()`,
+      and `run(..., thread=)` became `run(..., session=)`.
+- A **context provider** is a pair of hooks around each run:
+    - `before_run`: add to what the model sees this turn (instructions, messages, tools).
+    - `after_run`: look at the messages and the response, and record what is worth keeping.
+- The `state` dict a provider is handed is **provider-scoped storage that lives inside
+  `session.state`** — the docstring says "Full cross-provider state remains available at
+  `session.state`".
+
+**So a context provider's memory is session-scoped, exactly like the chat history.** Both
+sit in the same dict, and both disappear when the session does. A provider is the *place*
+where long-term memory becomes possible; it is not the storage that makes it happen.
+Writing a fact into `state` just puts it back in the session.
+
+To make something outlive a session, one of these has to happen:
+
+- **Persist the session yourself** — `session.to_dict()` / `AgentSession.from_dict()` into
+  a database, cache, or file.
+- **Subclass `HistoryProvider`** and implement `get_messages` / `save_messages` against
+  your own storage. `FileHistoryProvider` (one JSON Lines file per session) is the shipped
+  example.
+- **Read and write your own store inside `before_run` / `after_run`.** This is the one for
+  durable facts like a name or a preferred language: load it in `before_run` and inject it
+  with `context.extend_instructions(...)`, then save any new fact in `after_run`. The store
+  has to be something outside the session — a database, or the host application's own
+  per-user state.
+
+`tutorials/agents/04_memory.py` shows the hook shape, but note it reads its result back out
+of `session.state` — so what it actually demonstrates is per-session memory, not memory
+that survives into a new session.
 
 ## Context Window Management/Truncation
 
